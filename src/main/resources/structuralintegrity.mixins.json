@@ -1,0 +1,14 @@
+{
+  "required": true,
+  "minVersion": "0.8.5",
+  "package": "com.apokalypse.structuralintegrity.mixin",
+  "plugin": "com.apokalypse.structuralintegrity.mixin.SIMixinPlugin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [],
+  "client": [
+    "GoggleOverlayMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

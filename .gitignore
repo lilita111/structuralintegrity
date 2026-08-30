@@ -1,0 +1,8 @@
+.gradle/
+build/
+run/
+runs/
+libs/*
+
+# The two sable jars are extracted from the pack, not committed - see libs/README.md
+!libs/README.md

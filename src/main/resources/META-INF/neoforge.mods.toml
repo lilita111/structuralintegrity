@@ -1,0 +1,59 @@
+modLoader = "javafml"
+loaderVersion = "[1,)"
+license = "MIT"
+
+# Client only, and gated by SIMixinPlugin on Create actually being installed.
+[[mixins]]
+config = "structuralintegrity.mixins.json"
+
+[[mods]]
+modId = "structuralintegrity"
+version = "0.1.0"
+displayName = "Create: Integrity"
+description = '''A structure held up by one block is held up by nothing.
+
+Every block carries a hidden strength. Load routes from each block toward the
+nearest anchor in the terrain; a block whose transmitted load exceeds its
+strength is the point where the build fails - and the point where it gets cut.
+The severed part becomes a Sable sub-level and falls under physics, taking
+collision damage on the way down.
+
+Stage 1: read-only. Reports the overloaded block, cuts nothing.'''
+authors = "Iaotyra"
+
+[[dependencies.structuralintegrity]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1.223,21.2)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.structuralintegrity]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1,1.21.2)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.structuralintegrity]]
+modId = "sable"
+type = "required"
+versionRange = "[1.0,)"
+ordering = "AFTER"
+side = "BOTH"
+
+[[dependencies.structuralintegrity]]
+modId = "sablecollisiondamage"
+type = "required"
+versionRange = "[1.0,)"
+ordering = "AFTER"
+side = "BOTH"
+
+# Optional. With Create installed the goggles read out block integrity; without
+# it the mod is unchanged and the mixin is never applied.
+[[dependencies.structuralintegrity]]
+modId = "create"
+type = "optional"
+versionRange = "[6.0,)"
+ordering = "AFTER"
+side = "BOTH"
