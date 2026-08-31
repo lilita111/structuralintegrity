@@ -32,3 +32,11 @@ neoForge {
         create("structuralintegrity") { sourceSet(sourceSets["main"]) }
     }
 }
+
+// neoforge.mods.toml carried a hardcoded version, so the in-game mod list reported
+// 0.1.0 forever while the jar filename tracked mod_version. One source of truth.
+tasks.named<ProcessResources>("processResources") {
+    val props = mapOf("mod_version" to version)
+    inputs.properties(props)
+    filesMatching("META-INF/neoforge.mods.toml") { expand(props) }
+}

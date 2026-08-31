@@ -46,12 +46,25 @@ public final class Integrity {
 
     /** Hard cap on one region fill. Reaching it is always reported, never silent. */
     public static final int MAX_REGION = 2048;
+
+    /**
+     * How far a placement's charge is allowed to descend before it is abandoned.
+     *
+     * This is a chain, not a fill, so it is bounded by the height of the structure
+     * rather than by its mass - a couple of hundred is already past bedrock. Reaching
+     * it means the support graph has led somewhere unreasonable and the pass gives up
+     * rather than walking forever; it is reported, never silent.
+     */
+    public static final int MAX_LOAD_PATH = 256;
     /** Default for a solid block with no row in naturalintegrityreg. */
     public static final int DEFAULT_INTEGRITY = 8;
     /** Default for a block with no collision shape - a torch, a flower, a rail. */
     public static final int DEFAULT_FRAGILE = 1;
-    /** A support this low has nothing left to give: it is crushed, not reduced. */
-    public static final int CRUSH_AT = 1;
+    /**
+     * A block degraded to this has nothing left and fails outright. 1 is the
+     * cracked state - loaded to its last point, still standing.
+     */
+    public static final int FAIL_AT = 0;
 
     private static final Direction[] DIRS = Direction.values();
 
@@ -63,37 +76,164 @@ public final class Integrity {
      * What a placement did. Reported, never guessed at from the log.
      *
      * @param support   the neighbour the block was built on, or null if it had none
-     * @param supportAt that neighbour's integrity, unchanged by the placement
-     * @param crushed   the support, when it was at {@link #CRUSH_AT} and failed
+     * @param supportAt that neighbour's integrity before the placement charged it
+     * @param failed    every block the degrade pass drove to {@link #FAIL_AT}
+     * @param degraded  how many blocks the pass reduced, failed ones included
      */
     public record Placed(
             BlockPos pos, int natural, int assigned,
             @Nullable BlockPos support, int supportAt,
-            boolean onAnchor, @Nullable BlockPos crushed
+            boolean onAnchor, List<BlockPos> failed, int degraded, boolean capped,
+            String trace
     ) {}
+
+    /**
+     * What one {@link #degrade} pass did.
+     *
+     * @param trace the path it walked, {@code x,y,z=value} per step, for the log
+     */
+    public record Degraded(int count, List<BlockPos> failed, boolean capped, String trace) {}
+
+    /**
+     * What holds a block up: the neighbour with the most left in it.
+     *
+     * The single definition of support in the mod. {@link #place} asks it what the
+     * new block inherits from, {@link #degrade} asks it where the load goes next, and
+     * because both ask the same question the answer cannot disagree between them.
+     *
+     * There is no direction in the rule. Strongest wins, and ties fall to the earlier
+     * {@link Direction} - which is DOWN, then UP, then the horizontals. So a block
+     * resting on ground and touching a wall of equal strength is held by the ground,
+     * but a block with only a wall to hold it is held by the wall, and building out
+     * from a cliff face costs exactly what building up from it costs.
+     *
+     * @param exclude positions the chain has already been through, or null
+     * @return the supporting neighbour, or null if nothing structural touches it
+     */
+    @Nullable
+    public static BlockPos supportOf(ServerLevel level, WbiReg reg, BlockPos pos,
+                                     @Nullable Set<BlockPos> exclude) {
+        BlockPos best = null;
+        int bestValue = Integer.MIN_VALUE;
+        for (Direction d : DIRS) {
+            BlockPos n = pos.relative(d).immutable();
+            if (exclude != null && exclude.contains(n)) {
+                continue;
+            }
+            if (!isStructural(level, n, null)) {
+                continue;
+            }
+            int v = storedAt(level, reg, n);
+            if (v > bestValue) {
+                bestValue = v;
+                best = n;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Charge a placement to the structure carrying it.
+     *
+     * The load descends. From {@code start} the pass takes one point, then asks
+     * {@link #supportOf} what holds THAT up and repeats, so the charge travels the
+     * chain the weight actually travels: block, its footing, that footing's footing,
+     * down to ground. Ground ends it - rock takes the load and passes none on - and
+     * so does a block driven to {@link #FAIL_AT}, which is not carrying anything any
+     * more and therefore has nothing to hand down.
+     *
+     * There is no falloff along the chain: every block in it pays the same one point.
+     * That is what makes the base of a pillar fail first - it is on the path of every
+     * placement above it, so it is charged once per block, while the tip is charged
+     * once in its life.
+     *
+     * This is a chain and not a flood, and the difference is the whole behaviour. A
+     * flood charges every block connected to the support, which means a placement on
+     * a beach charges the beach; and because a flood has to pick a visit order, which
+     * block failed depended on {@link Direction} enumeration order rather than on
+     * anything physical - DOWN being first, the spread dived into the soil under the
+     * support instead of travelling along what was built, so a sideways run failed one
+     * block behind the tip while a pillar, having only one structural neighbour,
+     * behaved correctly. Following supports removes the choice, and with it the
+     * asymmetry: there is exactly one next block at every step.
+     *
+     * Iterative, not literally recursive - {@link #MAX_LOAD_PATH} deep would overflow
+     * the stack. The cap is reported, never silent.
+     *
+     * @param placed the block that was just set, excluded from the path because it is
+     *               the load rather than any part of what carries it
+     * @return the blocks driven to {@link #FAIL_AT}, for the caller to destroy
+     */
+    public static Degraded degrade(ServerLevel level, WbiReg reg, BlockPos start,
+                                   @Nullable BlockPos placed) {
+        List<BlockPos> failed = new ArrayList<>();
+        Set<BlockPos> visited = new HashSet<>();
+        StringBuilder trace = new StringBuilder();
+        if (placed != null) {
+            visited.add(placed.immutable());
+        }
+
+        BlockPos cur = start == null ? null : start.immutable();
+        int count = 0;
+        boolean capped = false;
+
+        while (cur != null) {
+            if (count >= MAX_LOAD_PATH) {
+                capped = true;
+                break;
+            }
+            // Ground is where the load was always going. It is not reduced.
+            if (!isStructural(level, cur, null) || isAnchor(level, reg, cur)) {
+                break;
+            }
+            // A support graph can close a loop. Arriving twice means the chain has
+            // nowhere left to descend to, so it ends here rather than circling.
+            if (!visited.add(cur)) {
+                break;
+            }
+
+            // A block cannot be worse than spent. Below FAIL_AT the number is
+            // meaningless - it is already queued for destruction - and it only makes
+            // the report harder to read.
+            int now = Math.max(FAIL_AT, storedAt(level, reg, cur) - 1);
+            reg.set(cur, now);
+            count++;
+            if (trace.length() > 0) {
+                trace.append(" -> ");
+            }
+            trace.append(cur.getX()).append(',').append(cur.getY()).append(',')
+                    .append(cur.getZ()).append('=').append(now);
+
+            if (now <= FAIL_AT) {
+                failed.add(cur);
+                trace.append("!FAIL");
+                break;
+            }
+            cur = supportOf(level, reg, cur, visited);
+        }
+        return new Degraded(count, failed, capped, trace.toString());
+    }
 
     /**
      * Assign the placed block its integrity from the block it was built on.
      *
      * <pre>
-     *   on ground   assigned = natural                    (a full row, not an anchor)
-     *   otherwise   assigned = min(natural, support - 1)
-     *   support 1   assigned = 1, and the support is crushed
+     *   on ground   assigned = natural           and nothing is charged
+     *   otherwise   assigned = stored(support)   and degrade(support) charges -1
      * </pre>
      *
-     * A support with no wbireg row is ground, worth maximum + 1, so the placed block
-     * starts at its own natural. Every block after that is one below the one it was
-     * built on, so natural integrity reads directly as pillar height: the Nth block
-     * of a material with natural N is at 1.
+     * The new block does not arrive weaker than what it stands on - it arrives equal
+     * to it, capped at its own natural, because a block is only ever as sound as its
+     * footing. What the placement costs is paid underneath, by {@link #degrade}.
      *
-     * The support itself is never reduced. Carrying load is the hang term's job, and
-     * charging here as well would count the same weight twice; it also let the first
-     * block of a pillar drop below its natural, which it must not do.
+     * This is the reverse of the obvious reading, and it is the physical one: weight
+     * travels down. The block at the bottom of a pillar is charged once for every
+     * block above it, so it is the first to fail, and it fails while the tip is still
+     * near full. A support with no wbireg row is ground - it is charged nothing and
+     * passes nothing on, so founding on rock is free.
      *
-     * Build one higher than that and the support is at {@link #CRUSH_AT}: it has
-     * nothing left to give, so it fails outright and the new block takes 1. Nothing
-     * below it is touched - the pillar does not fall, it loses its top. The new block
-     * is then floating with a gap under it, so it goes the way every disconnected
+     * A block driven to {@link #FAIL_AT} is destroyed by the caller next tick.
+     * Whatever it was holding is then floating, and goes the way every disconnected
      * block goes: {@link #isConnectedToAnchor} is false and it becomes a sublevel.
      *
      * The support is the best neighbour in any direction, not just below, so
@@ -106,42 +246,28 @@ public final class Integrity {
         }
         int natural = naturalOf(level, pos, level.getBlockState(pos));
 
-        BlockPos support = null;
-        int best = Integer.MIN_VALUE;
-        for (Direction d : DIRS) {
-            BlockPos n = pos.relative(d);
-            if (!isStructural(level, n, null)) {
-                continue;
-            }
-            int v = reg.get(n);
-            if (v > best) {
-                best = v;
-                support = n;
-            }
-        }
+        BlockPos support = supportOf(level, reg, pos, null);
+        int best = support == null ? Integer.MIN_VALUE : storedAt(level, reg, support);
 
         if (support == null) {
             // Placed touching nothing structural. It supports itself and no more.
             reg.set(pos, 0);
-            return new Placed(pos.immutable(), natural, 0, null, 0, false, null);
+            return new Placed(pos.immutable(), natural, 0, null, 0, false, List.of(), 0, false, "");
         }
 
         if (best == WbiReg.ANCHOR) {
+            // Founded on rock. Full strength, and the ground is charged nothing.
             reg.set(pos, natural);
             return new Placed(pos.immutable(), natural, natural,
-                    support.immutable(), best, true, null);
+                    support.immutable(), best, true, List.of(), 0, false, "");
         }
 
-        if (best <= CRUSH_AT) {
-            reg.set(pos, CRUSH_AT);
-            return new Placed(pos.immutable(), natural, CRUSH_AT,
-                    support.immutable(), best, false, support.immutable());
-        }
-
-        int assigned = Math.min(natural, best - 1);
+        // Inherit the footing, then charge the structure that provides it.
+        int assigned = Math.min(natural, best);
         reg.set(pos, assigned);
+        Degraded d = degrade(level, reg, support, pos);
         return new Placed(pos.immutable(), natural, assigned,
-                support.immutable(), best, false, null);
+                support.immutable(), best, false, d.failed(), d.count(), d.capped(), d.trace());
     }
 
     /**
@@ -161,7 +287,7 @@ public final class Integrity {
         List<BlockPos> out = new ArrayList<>(6);
         for (Direction d : DIRS) {
             BlockPos n = pos.relative(d);
-            if (!isStructural(level, n, ghost) || !reg.isAnchor(n)) {
+            if (!isStructural(level, n, ghost) || !isAnchor(level, reg, n)) {
                 continue;
             }
             reg.set(n, naturalOf(level, n, level.getBlockState(n)));
@@ -192,12 +318,29 @@ public final class Integrity {
             boolean capped,
             long micros
     ) {
-        /** Literal spec reading: the worst single face binds. */
+        /**
+         * What the block has left, and the only thing that decides whether it stands.
+         *
+         * Once the placement cost moved into the stored value this became the whole
+         * of it. The hang terms below used to be subtracted here as well, which
+         * charged every placement twice: {@link #degrade} took a point off the
+         * support permanently, and then this took another off for the same weight
+         * still sitting on it. A pillar therefore failed at half the height its
+         * material said it should.
+         */
+        public int integrity() {
+            return stored;
+        }
+
+        /**
+         * Dead weight on the worst single face. Reported, not charged - see
+         * {@link #integrity()} for why.
+         */
         public int integrityMax() {
             return stored - hangMax;
         }
 
-        /** Physical reading: load hung off several faces adds up. */
+        /** Dead weight summed over every face. Reported, not charged. */
         public int integritySum() {
             return stored - hangSum;
         }
@@ -209,11 +352,11 @@ public final class Integrity {
             if (!grounded) {
                 return "FLOATING";
             }
-            int v = integrityMax();
-            if (v <= 0) {
+            int v = integrity();
+            if (v <= FAIL_AT) {
                 return "BREAK";
             }
-            if (v == 1) {
+            if (v == FAIL_AT + 1) {
                 return "CRACK";
             }
             return "OK";
@@ -247,7 +390,7 @@ public final class Integrity {
      */
     public static Component collect(ServerLevel level, WbiReg reg, BlockPos seed,
                                     @Nullable BlockPos ghost, int max) {
-        if (!isStructural(level, seed, ghost) || reg.isAnchor(seed)) {
+        if (!isStructural(level, seed, ghost) || isAnchor(level, reg, seed)) {
             return new Component(List.of(), true, false);
         }
 
@@ -260,7 +403,7 @@ public final class Integrity {
 
         while (!queue.isEmpty() && out.size() < max) {
             BlockPos p = queue.poll();
-            if (reg.isAnchor(p)) {
+            if (isAnchor(level, reg, p)) {
                 return new Component(List.of(), true, false);
             }
             out.add(p);
@@ -302,8 +445,9 @@ public final class Integrity {
         }
 
         int natural = naturalOf(level, pos, state);
-        boolean anchor = reg.isAnchor(pos);
-        int stored = anchor ? natural : reg.get(pos);
+        int reading = storedAt(level, reg, pos);
+        boolean anchor = reading == WbiReg.ANCHOR;
+        int stored = anchor ? natural : reading;
 
         Set<BlockPos> visited = new HashSet<>();
         Map<BlockPos, Integer> regionOf = new HashMap<>();
@@ -373,7 +517,7 @@ public final class Integrity {
 
         while (!queue.isEmpty() && out.count < MAX_REGION) {
             BlockPos p = queue.poll();
-            if (reg.isAnchor(p)) {
+            if (isAnchor(level, reg, p)) {
                 out.grounded = true;
                 continue; // ground: do not count, do not expand through
             }
@@ -391,6 +535,49 @@ public final class Integrity {
         }
         out.capped = !queue.isEmpty();
         return out;
+    }
+
+    /**
+     * The wbireg reading for a position, and the only place anchor-ness is decided.
+     *
+     * Ground is "no row". Some blocks may never mean that: loose material and growth
+     * hold themselves up and nothing else. Rather than carve out a second kind of
+     * ground, such a block is simply given the row it should have had, at its own
+     * natural, the first time the solver looks at it - after which it is an ordinary
+     * tracked block and every rule below applies to it unchanged.
+     *
+     * This is the air rule one step in. Air says "not part of the structure";
+     * never-anchor says "part of the structure, never the thing holding it up".
+     *
+     * @return the stored value, or {@link WbiReg#ANCHOR} if this position is ground
+     */
+    public static int storedAt(ServerLevel level, WbiReg reg, BlockPos pos) {
+        int v = reg.get(pos);
+        if (v != WbiReg.ANCHOR) {
+            return v;
+        }
+        BlockState state = level.getBlockState(pos);
+        if (!neverAnchor(state)) {
+            return WbiReg.ANCHOR;
+        }
+        int natural = naturalOf(level, pos, state);
+        reg.set(pos, natural);
+        return natural;
+    }
+
+    /** True when this position is ground: untouched, and allowed to be. */
+    public static boolean isAnchor(ServerLevel level, WbiReg reg, BlockPos pos) {
+        return storedAt(level, reg, pos) == WbiReg.ANCHOR;
+    }
+
+    /**
+     * naturalintegrityreg lookup, never_anchor column. A block with no row can be
+     * ground - the default is the permissive one, so unlisted modded blocks behave
+     * like stone rather than like sand.
+     */
+    public static boolean neverAnchor(BlockState state) {
+        BlockIntegrity row = state.getBlock().builtInRegistryHolder().getData(SIDataMaps.NATURAL);
+        return row != null && row.neverAnchor();
     }
 
     /**

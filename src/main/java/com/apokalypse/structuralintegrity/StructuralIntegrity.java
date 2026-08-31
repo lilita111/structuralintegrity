@@ -23,12 +23,17 @@ public class StructuralIntegrity {
         modBus.addListener(SIPayloads::register);
         NeoForge.EVENT_BUS.register(SIEvents.class);
         NeoForge.EVENT_BUS.register(SIFall.class);
-        LOGGER.info("[SI] stage 2 loaded - integrity = stored - hang; ground = no wbireg row (max+1)");
+        LOGGER.info("[SI] integrity = stored; the placement cost lives in stored now, so hang is "
+                + "reported but no longer charged; ground = no wbireg row (max+1)");
         LOGGER.info("[SI] limits: maxRegion={} defaultIntegrity={}",
                 Integrity.MAX_REGION, Integrity.DEFAULT_INTEGRITY);
-        LOGGER.info("[SI] placement rule: on ground stored = natural; otherwise stored = min(natural, support - 1)");
-        LOGGER.info("[SI] the support is never reduced; a support at {} is crushed instead", Integrity.CRUSH_AT);
+        LOGGER.info("[SI] placement rule: on ground stored = natural; otherwise stored = min(natural, support)");
+        LOGGER.info("[SI] load descends the support chain from the support to ground, -1 per block, "
+                + "at most {} deep; it stops at ground and at the first block to reach {}",
+                Integrity.MAX_LOAD_PATH, Integrity.FAIL_AT);
+        LOGGER.info("[SI] support = the strongest neighbour, ties to DOWN; one rule for placement and for load");
         LOGGER.info("[SI] falling: a component that cannot reach ground is assembled by sable, up to {} blocks",
                 SIFall.MAX_ASSEMBLY);
+        LOGGER.info("[SI] never_anchor blocks get a wbireg row on sight - loose material and growth are never ground");
     }
 }

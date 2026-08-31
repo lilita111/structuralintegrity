@@ -8,7 +8,7 @@ config = "structuralintegrity.mixins.json"
 
 [[mods]]
 modId = "structuralintegrity"
-version = "0.1.0"
+version = "${mod_version}"
 displayName = "Create: Integrity"
 description = '''A structure held up by one block is held up by nothing.
 

@@ -12,10 +12,17 @@ import com.mojang.serialization.codecs.RecordCodecBuilder;
  *
  * Shipped in the jar at data/structuralintegrity/data_maps/block/integrity.json.
  * A datapack may override it. It is not a config.
+ *
+ * @param neverAnchor this block can never read as ground. Loose material and
+ *                    growth hold themselves up and nothing else: they are part of
+ *                    a structure, they are never what a structure rests on. Such a
+ *                    block is given a real wbireg row the first time the solver
+ *                    looks at it, because "absent" is what ground means.
  */
-public record BlockIntegrity(int integrity) {
+public record BlockIntegrity(int integrity, boolean neverAnchor) {
 
     public static final Codec<BlockIntegrity> CODEC = RecordCodecBuilder.create(i -> i.group(
-            Codec.INT.fieldOf("integrity").forGetter(BlockIntegrity::integrity)
+            Codec.INT.fieldOf("integrity").forGetter(BlockIntegrity::integrity),
+            Codec.BOOL.optionalFieldOf("never_anchor", false).forGetter(BlockIntegrity::neverAnchor)
     ).apply(i, BlockIntegrity::new));
 }

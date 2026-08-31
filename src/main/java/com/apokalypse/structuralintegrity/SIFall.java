@@ -49,6 +49,20 @@ public final class SIFall {
     private static final Map<ServerLevel, LinkedHashSet<BlockPos>> PENDING_FALL = new HashMap<>();
     private static final Map<ServerLevel, LinkedHashSet<BlockPos>> PENDING_DESTROY = new HashMap<>();
 
+    /**
+     * Positions an assembly has already been attempted at, and the tick it happened.
+     *
+     * A successful assembly is supposed to empty the world of those blocks. When it
+     * does not, the next fall pass finds the same blocks detached and assembles them
+     * again, and again, once per pass forever - which is what the log showed, the same
+     * anchor and the same size 0.8s apart. This is the brake: an anchor that has just
+     * been through assembly is left alone long enough for the world to settle.
+     */
+    private static final Map<ServerLevel, Map<BlockPos, Long>> RECENT_ASSEMBLY = new HashMap<>();
+
+    /** How long an anchor is held off after an assembly attempt. */
+    public static final int ASSEMBLY_COOLDOWN_TICKS = 40;
+
     /** Guards against a re-entrant assembly triggering itself through block updates. */
     private static boolean running;
 
@@ -186,6 +200,19 @@ public final class SIFall {
      * tracking points and riding entities are swept out of, not the block set.
      */
     private static boolean assemble(ServerLevel level, WbiReg reg, BlockPos anchor, List<BlockPos> blocks) {
+        Map<BlockPos, Long> recent = RECENT_ASSEMBLY.computeIfAbsent(level, l -> new HashMap<>());
+        long now = level.getGameTime();
+        recent.entrySet().removeIf(e -> now - e.getValue() > ASSEMBLY_COOLDOWN_TICKS);
+
+        Long last = recent.get(anchor.immutable());
+        if (last != null) {
+            StructuralIntegrity.LOGGER.warn(
+                    "[SI] assembly at {} SUPPRESSED, attempted {} ticks ago and the blocks are still here",
+                    fmt(anchor), now - last);
+            return false;
+        }
+        recent.put(anchor.immutable(), now);
+
         BoundingBox3i bounds = BoundingBox3i.from(blocks);
         bounds.set(bounds.minX - 1, bounds.minY - 1, bounds.minZ - 1,
                 bounds.maxX + 1, bounds.maxY + 1, bounds.maxZ + 1);
@@ -202,6 +229,27 @@ public final class SIFall {
         if (subLevel.getMassTracker().isInvalid()) {
             StructuralIntegrity.LOGGER.warn("[SI] assembled at {} but sable reports no mass - nothing moved",
                     fmt(anchor));
+            return false;
+        }
+
+        // Sable reporting mass is not the same as the world having given the blocks
+        // up. Measure it: if they are still standing, the assembly did not happen and
+        // saying it did is what makes the next pass do it all over again.
+        int left = 0;
+        BlockPos first = null;
+        for (BlockPos p : blocks) {
+            if (!level.getBlockState(p).isAir()) {
+                if (first == null) {
+                    first = p.immutable();
+                }
+                left++;
+            }
+        }
+        if (left > 0) {
+            StructuralIntegrity.LOGGER.error(
+                    "[SI] assembly at {} claimed {} blocks but {} are STILL IN THE WORLD, first {} - "
+                            + "rows left alone, position held off {} ticks",
+                    fmt(anchor), blocks.size(), left, fmt(first), ASSEMBLY_COOLDOWN_TICKS);
             return false;
         }
 

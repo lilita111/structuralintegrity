@@ -20,8 +20,11 @@ import java.util.Set;
  * Stage 1 trigger points. Only blocks a player updates are run through the
  * function - vanilla neighbour updates, redstone, fluids and pistons are ignored.
  *
- * place : assign the placed block its integrity and charge its support, then
- *         evaluate the placed block and its neighbours.
+ * place : the placed block inherits its support's integrity, and the load then
+ *         descends the support chain from that support to ground, charging one
+ *         point per block, before the placed block and its neighbours are
+ *         evaluated. The whole chain is printed, so what the maths did is
+ *         readable from the log without guessing.
  * break : drop the broken row, disturb the neighbours out of ground, then
  *         evaluate them.
  *
@@ -45,10 +48,13 @@ public final class SIEvents {
         run(level, reg, "PLACE", event.getPos(), null, placed, List.of(),
                 placer instanceof Player p ? p : null);
 
-        // Stage 2. A crushed support is removed next tick, and the placed block is
-        // then left floating - which the fall pass picks up on its own.
-        if (placed != null && placed.crushed() != null) {
-            SIFall.queueDestroy(level, placed.crushed());
+        // The degrade pass can drive several blocks to zero at once, anywhere in the
+        // structure. They are removed next tick, and whatever they were holding is
+        // then floating - which the fall pass picks up on its own.
+        if (placed != null) {
+            for (BlockPos failed : placed.failed()) {
+                SIFall.queueDestroy(level, failed);
+            }
         }
         SIFall.seedAround(level, event.getPos(), true);
     }
@@ -161,9 +167,18 @@ public final class SIEvents {
             sb.append(" on ").append(fmt(p.support()))
                     .append(" (support=").append(p.supportAt()).append(')');
         }
-        if (p.crushed() != null) {
-            sb.append(" CRUSH ").append(fmt(p.crushed()))
-                    .append(" (support spent; placed block is left floating)");
+        if (p.degraded() > 0) {
+            sb.append(" load[").append(p.degraded()).append("] ").append(p.trace());
+            if (p.capped()) {
+                sb.append(" CAPPED(").append(Integrity.MAX_LOAD_PATH).append(')');
+            }
+        }
+        if (!p.failed().isEmpty()) {
+            sb.append(" FAILED");
+            for (BlockPos f : p.failed()) {
+                sb.append(' ').append(fmt(f));
+            }
+            sb.append(" (spent; destroyed next tick)");
         }
         return sb.toString();
     }
@@ -196,7 +211,8 @@ public final class SIEvents {
                 + " nat=" + r.natural()
                 + " stored=" + (r.anchor() ? "GROUND" : String.valueOf(r.stored()))
                 + " hang=" + r.hangMax() + "/" + r.hangSum()
-                + " -> " + r.integrityMax() + "/" + r.integritySum()
+                + " -> " + r.integrity()
+                + " (hang-adj " + r.integrityMax() + "/" + r.integritySum() + ")"
                 + " " + r.verdict();
     }
 
@@ -208,7 +224,7 @@ public final class SIEvents {
                 if (r.anchor()) {
                     continue; // ground never fails; it would win every comparison
                 }
-                if (best == null || r.integrityMax() < best.integrityMax()) {
+                if (best == null || r.integrity() < best.integrity()) {
                     best = r;
                 }
             }
