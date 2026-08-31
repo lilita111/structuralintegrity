@@ -82,6 +82,13 @@ public final class SIConfig {
                     "sides; both false breaks neither - the chain stays spent but standing.")
             .define("breakStrongerBlock", false);
 
+    private static final ModConfigSpec.BooleanValue BREAK_ON_INTEGRITY_LOSS = B
+            .comment("true: a block scheduled to break at failAt is destroyed (the current",
+                    "behaviour). false: the spent block stays in the world, pinned at failAt,",
+                    "and stops carrying load - whatever it was holding detaches into a",
+                    "sub-level around it. No block is lost and no splintering happens.")
+            .define("breakOnIntegrityLoss", true);
+
     private static final ModConfigSpec.BooleanValue REVERSE_INTEGRITY_ON_BREAK = B
             .comment("true: destroying a block runs the chain in reverse - the same walk from",
                     "its support toward ground, +1 per block instead of -1, capped at each",
@@ -234,6 +241,10 @@ public final class SIConfig {
 
     public static int maxLoadPath() {
         return SPEC.isLoaded() ? MAX_LOAD_PATH.get() : Integrity.MAX_LOAD_PATH;
+    }
+
+    public static boolean breakOnIntegrityLoss() {
+        return !SPEC.isLoaded() || BREAK_ON_INTEGRITY_LOSS.get();
     }
 
     public static int failAt() {
