@@ -121,6 +121,9 @@ public final class Integrity {
     @Nullable
     public static BlockPos supportOf(ServerLevel level, WbiReg reg, BlockPos pos,
                                      @Nullable Set<BlockPos> exclude) {
+        if (!SIConfig.gravityFirstChain()) {
+            return strongestSupportOf(level, reg, pos, exclude);
+        }
         BlockPos down = null;
         BlockPos up = null;
         List<BlockPos> sideways = new ArrayList<>(4);
@@ -148,6 +151,33 @@ public final class Integrity {
                     : sideways.get(level.getRandom().nextInt(sideways.size()));
         }
         return up;
+    }
+
+    /**
+     * The pre-0.5.2 rule, kept behind {@code gravityFirstChain=false}: the neighbour
+     * with the most stored integrity carries the load, ties going DOWN first because
+     * of {@link Direction} enumeration order.
+     */
+    @Nullable
+    private static BlockPos strongestSupportOf(ServerLevel level, WbiReg reg, BlockPos pos,
+                                               @Nullable Set<BlockPos> exclude) {
+        BlockPos best = null;
+        int bestAt = Integer.MIN_VALUE;
+        for (Direction d : DIRS) {
+            BlockPos n = pos.relative(d).immutable();
+            if (exclude != null && exclude.contains(n)) {
+                continue;
+            }
+            if (!isStructural(level, n, null)) {
+                continue;
+            }
+            int at = storedAt(level, reg, n);
+            if (at > bestAt) {
+                bestAt = at;
+                best = n;
+            }
+        }
+        return best;
     }
 
     /**
@@ -194,9 +224,12 @@ public final class Integrity {
         BlockPos cur = start == null ? null : start.immutable();
         int count = 0;
         boolean capped = false;
+        int maxLoadPath = SIConfig.maxLoadPath();
+        int failAt = SIConfig.failAt();
+        int clumpThreshold = SIConfig.clumpBracingThreshold();
 
         while (cur != null) {
-            if (count >= MAX_LOAD_PATH) {
+            if (count >= maxLoadPath) {
                 capped = true;
                 break;
             }
@@ -213,7 +246,7 @@ public final class Integrity {
             // A block cannot be worse than spent. Below FAIL_AT the number is
             // meaningless - it is already queued for destruction - and it only makes
             // the report harder to read.
-            int now = Math.max(FAIL_AT, storedAt(level, reg, cur) - 1);
+            int now = Math.max(failAt, storedAt(level, reg, cur) - 1);
             reg.set(cur, now);
             count++;
             if (trace.length() > 0) {
@@ -222,7 +255,7 @@ public final class Integrity {
             trace.append(cur.getX()).append(',').append(cur.getY()).append(',')
                     .append(cur.getZ()).append('=').append(now);
 
-            if (now <= FAIL_AT) {
+            if (now <= failAt) {
                 failed.add(cur);
                 trace.append("!FAIL");
                 break;
@@ -240,10 +273,12 @@ public final class Integrity {
             // to whatever leans on it, so a beam into a stone mass is held at
             // stone's maximum, not the beam's. Same-type only for the count itself:
             // the clump has to be a dense mass of one material to lend anything.
-            if (cur != null) {
+            if (cur != null && clumpThreshold > 0) {
                 Block curBlock = level.getBlockState(cur).getBlock();
-                if (countSameTypeNeighbors(level, cur, curBlock, visited) >= 4) {
-                    int max = naturalOf(level, cur, level.getBlockState(cur));
+                if (countSameTypeNeighbors(level, cur, curBlock, visited) >= clumpThreshold) {
+                    int max = SIConfig.clumpBracingUsesClumpType()
+                            ? naturalOf(level, cur, level.getBlockState(cur))
+                            : naturalOf(level, prev, level.getBlockState(prev));
                     reg.set(prev, max);
                     trace.append(" (braced@").append(cur.getX()).append(',').append(cur.getY())
                             .append(',').append(cur.getZ()).append(", reset ").append(prev.getX())
@@ -419,10 +454,11 @@ public final class Integrity {
                 return "FLOATING";
             }
             int v = integrity();
-            if (v <= FAIL_AT) {
+            int failAt = SIConfig.failAt();
+            if (v <= failAt) {
                 return "BREAK";
             }
-            if (v == FAIL_AT + 1) {
+            if (v == failAt + 1) {
                 return "CRACK";
             }
             return "OK";
@@ -593,7 +629,7 @@ public final class Integrity {
         regionOf.put(start, idx);
         queue.add(start);
 
-        while (!queue.isEmpty() && out.count < MAX_REGION) {
+        while (!queue.isEmpty() && out.count < SIConfig.maxRegion()) {
             BlockPos p = queue.poll();
             if (isAnchor(level, reg, p)) {
                 out.grounded = true;
@@ -650,8 +686,13 @@ public final class Integrity {
         int natural = naturalOf(level, pos, state);
         // Ground is the permissive default - but nothing with no collision shape can
         // hold anything up, so it never gets to be ground either way; that is the same
-        // floor naturalOf already gave it below. Listed rows still decide for themselves.
-        boolean neverAnchor = row != null ? row.neverAnchor() : natural == DEFAULT_FRAGILE;
+        // floor naturalOf already gave it below. Listed rows still decide for themselves,
+        // unless the config's defaultAnchorBlocks forces anchor status back on.
+        boolean neverAnchor = row != null ? row.neverAnchor()
+                : natural == SIConfig.defaultFragileIntegrity();
+        if (neverAnchor && SIConfig.defaultAnchorBlocks().contains(state.getBlock())) {
+            neverAnchor = false;
+        }
         if (!neverAnchor) {
             return WbiReg.ANCHOR;
         }
@@ -674,7 +715,8 @@ public final class Integrity {
         if (row != null) {
             return row.integrity();
         }
-        return state.getCollisionShape(level, pos).isEmpty() ? DEFAULT_FRAGILE : DEFAULT_INTEGRITY;
+        return state.getCollisionShape(level, pos).isEmpty()
+                ? SIConfig.defaultFragileIntegrity() : SIConfig.defaultIntegrity();
     }
 
     public static boolean hasRow(BlockState state) {
@@ -691,6 +733,9 @@ public final class Integrity {
             return false;
         }
         BlockState state = level.getBlockState(pos);
-        return !state.isAir() && !(state.getBlock() instanceof LiquidBlock);
+        if (state.isAir() || state.getBlock() instanceof LiquidBlock) {
+            return false;
+        }
+        return !SIConfig.nonStructuralBlocks().contains(state.getBlock());
     }
 }

@@ -1,7 +1,9 @@
 package com.apokalypse.structuralintegrity;
 
 import net.neoforged.bus.api.IEventBus;
+import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.config.ModConfig;
 import net.neoforged.neoforge.common.NeoForge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,7 +20,8 @@ public class StructuralIntegrity {
     public static final String MODID = "structuralintegrity";
     public static final Logger LOGGER = LoggerFactory.getLogger("StructuralIntegrity");
 
-    public StructuralIntegrity(IEventBus modBus) {
+    public StructuralIntegrity(IEventBus modBus, ModContainer container) {
+        container.registerConfig(ModConfig.Type.SERVER, SIConfig.SPEC);
         modBus.addListener(SIDataMaps::onRegisterDataMaps);
         modBus.addListener(SIPayloads::register);
         NeoForge.EVENT_BUS.register(SIEvents.class);

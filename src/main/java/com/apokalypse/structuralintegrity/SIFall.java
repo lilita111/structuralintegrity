@@ -186,7 +186,7 @@ public final class SIFall {
             }
             checked++;
             long t0 = System.nanoTime();
-            Integrity.Component comp = Integrity.collect(level, reg, seed, null, MAX_ASSEMBLY);
+            Integrity.Component comp = Integrity.collect(level, reg, seed, null, SIConfig.maxAssemblySize());
             long micros = (System.nanoTime() - t0) / 1000L;
 
             if (comp.grounded()) {
@@ -201,7 +201,7 @@ public final class SIFall {
             if (comp.capped()) {
                 StructuralIntegrity.LOGGER.warn(
                         "[SI] fall check {} DETACHED but larger than maxAssembly={} - left in place ({}us)",
-                        fmt(seed), MAX_ASSEMBLY, micros);
+                        fmt(seed), SIConfig.maxAssemblySize(), micros);
                 continue;
             }
 
@@ -226,7 +226,8 @@ public final class SIFall {
     private static boolean assemble(ServerLevel level, WbiReg reg, BlockPos anchor, List<BlockPos> blocks) {
         Map<BlockPos, Long> recent = RECENT_ASSEMBLY.computeIfAbsent(level, l -> new HashMap<>());
         long now = level.getGameTime();
-        recent.entrySet().removeIf(e -> now - e.getValue() > ASSEMBLY_COOLDOWN_TICKS);
+        int cooldown = SIConfig.assemblyCooldownTicks();
+        recent.entrySet().removeIf(e -> now - e.getValue() > cooldown);
 
         Long last = recent.get(anchor.immutable());
         if (last != null) {
@@ -273,7 +274,7 @@ public final class SIFall {
             StructuralIntegrity.LOGGER.error(
                     "[SI] assembly at {} claimed {} blocks but {} are STILL IN THE WORLD, first {} - "
                             + "rows left alone, position held off {} ticks",
-                    fmt(anchor), blocks.size(), left, fmt(first), ASSEMBLY_COOLDOWN_TICKS);
+                    fmt(anchor), blocks.size(), left, fmt(first), SIConfig.assemblyCooldownTicks());
             return false;
         }
 
@@ -385,7 +386,7 @@ public final class SIFall {
                 continue;
             }
 
-            if (REST_TICKS.merge(subLevel, 1, Integer::sum) > REST_CHECK_TICKS) {
+            if (REST_TICKS.merge(subLevel, 1, Integer::sum) > SIConfig.restCheckTicks()) {
                 continue;
             }
 
@@ -452,8 +453,9 @@ public final class SIFall {
      * @return 0-3, or null if not aligned to a quarter-turn (or tipped off of pure yaw)
      */
     private static Integer alignedYawAngle(Quaterniondc orientation) {
+        double eps = SIConfig.snapOrientationEpsilon();
         Vector3d up = orientation.transform(new Vector3d(0, 1, 0));
-        if (up.distance(0, 1, 0) > ORIENTATION_EPSILON) {
+        if (up.distance(0, 1, 0) > eps) {
             return null; // pitched or rolled - vanilla block states can't represent this anyway
         }
 
@@ -462,7 +464,7 @@ public final class SIFall {
 
         for (int angle = 0; angle < 4; angle++) {
             Vec3 candidate = new Vec3(1, 0, 0).yRot((float) (angle * Math.PI / 2.0));
-            if (facingWorld.distanceTo(candidate) <= ORIENTATION_EPSILON) {
+            if (facingWorld.distanceTo(candidate) <= eps) {
                 return angle;
             }
         }
@@ -475,7 +477,7 @@ public final class SIFall {
 
     private static boolean isNearHalf(double coord) {
         double frac = coord - Math.floor(coord);
-        return Math.abs(frac - 0.5) <= POSITION_EPSILON;
+        return Math.abs(frac - 0.5) <= SIConfig.snapPositionEpsilon();
     }
 
     /**
@@ -519,10 +521,21 @@ public final class SIFall {
 
         SubLevelAssemblyHelper.moveBlocks(level, transform, blocks);
 
-        // The blocks are back in the world at these positions; anything that belongs there
-        // as an anchor will be re-derived the next time Integrity looks at it.
-        for (BlockPos p : blocks) {
-            reg.clear(transform.apply(p));
+        if (SIConfig.subLevelsFloatWhenReconverted()) {
+            // The blocks are back in the world at these positions; anything that belongs
+            // there as an anchor will be re-derived the next time Integrity looks at it.
+            for (BlockPos p : blocks) {
+                reg.clear(transform.apply(p));
+            }
+        } else {
+            // The landing does not mint new ground. Every landed block re-enters tracked
+            // at its own natural, and the anchor is re-checked next tick - a landing that
+            // cannot reach real ground from where it stopped falls again.
+            for (BlockPos p : blocks) {
+                BlockPos dest = transform.apply(p);
+                reg.set(dest, Integrity.naturalOf(level, dest, level.getBlockState(dest)));
+            }
+            queueFall(level, targetAnchor);
         }
 
         // No explicit removal: emptying the plot is the removal. Every one of the block
