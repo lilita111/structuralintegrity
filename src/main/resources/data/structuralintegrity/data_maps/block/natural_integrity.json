@@ -6,6 +6,8 @@
     "#minecraft:wooden_stairs":  { "integrity": 14, "never_anchor": true },
     "#minecraft:wooden_fences":  { "integrity": 9,  "never_anchor": true },
     "#minecraft:fence_gates":    { "integrity": 5,  "never_anchor": true },
+    "#minecraft:leaves":         { "integrity": 1,  "never_anchor": true },
+    "minecraft:hay_block":       { "integrity": 0,  "never_anchor": true },
     "#minecraft:sand":           { "integrity": 2,  "never_anchor": true },
     "#minecraft:dirt":           { "integrity": 2,  "never_anchor": true },
     "minecraft:gravel":          { "integrity": 2,  "never_anchor": true },

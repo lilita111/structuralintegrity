@@ -544,33 +544,33 @@ public final class SIFall {
         SubLevelAssemblyHelper.moveBlocks(level, transform, blocks);
 
         if (SIConfig.subLevelsFloatWhenReconverted()) {
-            // A landing only mints ground where it touches ground: a landed block
-            // becomes an anchor (row cleared) only if a neighbour OUTSIDE the landed
-            // set already reads as an anchor - checked with the pure peek, and before
-            // any clearing, so landed blocks can never anchor each other. The rest
-            // re-enter tracked at natural, and the landing is re-checked next tick.
+            // A landing mints ground where it touches the standing world: a landed
+            // block becomes an anchor (row cleared) if a neighbour OUTSIDE the landed
+            // set is any pre-existing structural block - checked before any clearing,
+            // so landed blocks can never anchor each other. The rest re-enter tracked
+            // at natural, and the landing is re-checked next tick.
             Set<BlockPos> dests = new HashSet<>(blocks.size());
             for (BlockPos p : blocks) {
                 dests.add(transform.apply(p));
             }
             int anchored = 0;
             for (BlockPos dest : dests) {
-                boolean touchesAnchor = false;
+                boolean touchesWorld = false;
                 for (Direction d : Direction.values()) {
                     BlockPos n = dest.relative(d);
-                    if (!dests.contains(n) && Integrity.isAnchor(level, reg, n)) {
-                        touchesAnchor = true;
+                    if (!dests.contains(n) && Integrity.isStructural(level, n, null)) {
+                        touchesWorld = true;
                         break;
                     }
                 }
-                if (touchesAnchor) {
+                if (touchesWorld) {
                     reg.clear(dest);
                     anchored++;
                 } else {
                     reg.setEntry(dest, Integrity.naturalOf(level, dest, level.getBlockState(dest)));
                 }
             }
-            StructuralIntegrity.LOGGER.info("[SI] revert anchoring: {}/{} landed blocks touch existing ground",
+            StructuralIntegrity.LOGGER.info("[SI] revert anchoring: {}/{} landed blocks touch the standing world",
                     anchored, dests.size());
             if (anchored < dests.size()) {
                 queueFall(level, targetAnchor);
@@ -581,7 +581,7 @@ public final class SIFall {
             // cannot reach real ground from where it stopped falls again.
             for (BlockPos p : blocks) {
                 BlockPos dest = transform.apply(p);
-                reg.set(dest, Integrity.naturalOf(level, dest, level.getBlockState(dest)));
+                reg.setEntry(dest, Integrity.naturalOf(level, dest, level.getBlockState(dest)));
             }
             queueFall(level, targetAnchor);
         }
