@@ -35,7 +35,8 @@ public class StructuralIntegrity {
                 + "at most {} deep; it stops at ground and at the first block to reach {}",
                 Integrity.MAX_LOAD_PATH, Integrity.FAIL_AT);
         LOGGER.info("[SI] support = gravity first: DOWN, then sideways, then UP; one rule for placement and for load");
-        LOGGER.info("[SI] clumps: a block entering wbireg with 4-5 same-type neighbours gets +natural once, at init");
+        LOGGER.info("[SI] clumps: a block entering wbireg with clumpBracingThreshold same-type neighbours "
+                + "gets its clump grant once, at init");
         LOGGER.info("[SI] snap: the chain stops at the first spent block; config picks which side of the snap breaks");
         LOGGER.info("[SI] falling: a component that cannot reach ground is assembled by sable, up to {} blocks",
                 SIFall.MAX_ASSEMBLY);

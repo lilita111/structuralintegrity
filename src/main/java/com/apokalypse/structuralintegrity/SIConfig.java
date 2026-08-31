@@ -53,16 +53,23 @@ public final class SIConfig {
                     "block enters tracking with its own natural integrity added on top of",
                     "its starting value - once, when its wbireg row is created; the chain's",
                     "-1 then wears the bonus away like anything else. 0 disables this.")
-            .defineInRange("clumpBracingThreshold", 4, 0, 5);
+            .defineInRange("clumpBracingThreshold", 5, 0, 6);
+
+    private static final ModConfigSpec.BooleanValue CLUMP_ADDS_ON_TOP = B
+            .comment("true: the clump grant is the block's natural integrity ADDED on top of",
+                    "its starting value (dirt: 2+2 -> 4). false: the grant sets the block to",
+                    "its max natural integrity and no higher.")
+            .define("clumpAddsOnTop", true);
 
     private static final ModConfigSpec.BooleanValue BREAK_WEAKER_BLOCK = B
-            .comment("A snap has two sides: the spent block and the block it was holding up.",
-                    "The side with the lower natural integrity is the weaker one - stone on",
-                    "clumped dirt, that is the dirt. true: the weaker side breaks.")
+            .comment("A snap has two sides: the spent block - the one whose wbireg value ran",
+                    "out - and the block it was holding up. The spent one is the weaker side.",
+                    "true: it breaks. This is the plain rule: a block breaks when its wbireg",
+                    "value reaches failAt.")
             .define("breakWeakerBlock", true);
 
     private static final ModConfigSpec.BooleanValue BREAK_STRONGER_BLOCK = B
-            .comment("true: the stronger side of the snap breaks too. Both true breaks both",
+            .comment("true: the held-up side of the snap breaks too. Both true breaks both",
                     "sides; both false breaks neither - the chain stays spent but standing.")
             .define("breakStrongerBlock", false);
 
@@ -156,7 +163,11 @@ public final class SIConfig {
     }
 
     public static int clumpBracingThreshold() {
-        return SPEC.isLoaded() ? CLUMP_BRACING_THRESHOLD.get() : 4;
+        return SPEC.isLoaded() ? CLUMP_BRACING_THRESHOLD.get() : 5;
+    }
+
+    public static boolean clumpAddsOnTop() {
+        return !SPEC.isLoaded() || CLUMP_ADDS_ON_TOP.get();
     }
 
     public static boolean breakWeakerBlock() {

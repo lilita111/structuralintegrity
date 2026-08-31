@@ -258,7 +258,7 @@ public final class Integrity {
 
             if (now <= failAt) {
                 trace.append("!SNAP");
-                snap(level, cur, prev, failed, trace);
+                snap(cur, prev, failed, trace);
                 break;
             }
 
@@ -269,26 +269,17 @@ public final class Integrity {
     }
 
     /**
-     * The chain has snapped at {@code spent}. A snap has two sides: the spent
-     * block, and {@code above} - the block it was holding up, which is the placed
-     * block itself when the snap lands on the first step. The side with the lower
-     * natural integrity is the weaker side; config chooses which side gives way -
-     * weaker, stronger, both, or neither.
+     * The chain has snapped at {@code spent} - really simply, the block whose
+     * wbireg value ran out. A snap has two sides: the spent block is the weaker
+     * side, because running out first is what being weaker means here, and
+     * {@code above} - the block it was holding up, the placed block itself when
+     * the snap lands on the first step - is the stronger side. Config chooses
+     * which side gives way: weaker, stronger, both, or neither.
      */
-    private static void snap(ServerLevel level, BlockPos spent, @Nullable BlockPos above,
+    private static void snap(BlockPos spent, @Nullable BlockPos above,
                              List<BlockPos> failed, StringBuilder trace) {
         BlockPos weaker = spent;
-        BlockPos stronger = null;
-        if (above != null) {
-            int natSpent = naturalOf(level, spent, level.getBlockState(spent));
-            int natAbove = naturalOf(level, above, level.getBlockState(above));
-            if (natAbove < natSpent) {
-                weaker = above;
-                stronger = spent;
-            } else {
-                stronger = above;
-            }
-        }
+        BlockPos stronger = above;
         if (SIConfig.breakWeakerBlock()) {
             failed.add(weaker);
             trace.append(" weaker@").append(weaker.getX()).append(',').append(weaker.getY())
@@ -321,10 +312,11 @@ public final class Integrity {
 
     /**
      * The value a block enters wbireg with. Clumps stay together: a block sitting
-     * in 4-5 same-type neighbours enters with its own natural integrity added on
-     * top of {@code base}. The bonus is paid here - at row creation - and only
-     * here, so it is paid once; from then on the chain takes its -1 from the block
-     * like from any other, and the bonus wears away instead of renewing.
+     * in threshold-many same-type neighbours gets its clump grant - its natural
+     * integrity added on top of {@code base}, or, with {@code clumpAddsOnTop}
+     * off, just its max natural. The grant is paid here - at row creation - and
+     * only here, so it is paid once; from then on the chain takes its -1 from the
+     * block like from any other, and the grant wears away instead of renewing.
      */
     private static int initialValue(ServerLevel level, BlockPos pos, int base) {
         int threshold = SIConfig.clumpBracingThreshold();
@@ -335,10 +327,11 @@ public final class Integrity {
         if (countSameTypeNeighbors(level, pos, state.getBlock()) < threshold) {
             return base;
         }
-        int bonus = naturalOf(level, pos, state);
-        StructuralIntegrity.LOGGER.info("[SI] clump init {},{},{}: {}+{} -> {}",
-                pos.getX(), pos.getY(), pos.getZ(), base, bonus, base + bonus);
-        return base + bonus;
+        int natural = naturalOf(level, pos, state);
+        int value = SIConfig.clumpAddsOnTop() ? base + natural : Math.max(base, natural);
+        StructuralIntegrity.LOGGER.info("[SI] clump init {},{},{}: {} -> {} (natural {})",
+                pos.getX(), pos.getY(), pos.getZ(), base, value, natural);
+        return value;
     }
 
     /**
