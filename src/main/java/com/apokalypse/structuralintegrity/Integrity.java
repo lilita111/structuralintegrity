@@ -800,7 +800,7 @@ public final class Integrity {
      * rows still decide for themselves, unless the config's defaultAnchorBlocks
      * forces anchor status back on.
      */
-    private static boolean neverAnchor(ServerLevel level, BlockPos pos, BlockState state) {
+    static boolean neverAnchor(ServerLevel level, BlockPos pos, BlockState state) {
         BlockIntegrity row = state.getBlock().builtInRegistryHolder().getData(SIDataMaps.NATURAL);
         boolean never = row != null ? row.neverAnchor()
                 : naturalOf(level, pos, state) == SIConfig.defaultFragileIntegrity();
@@ -875,8 +875,24 @@ public final class Integrity {
         if (row != null) {
             return row.integrity();
         }
-        return state.getCollisionShape(level, pos).isEmpty()
-                ? SIConfig.defaultFragileIntegrity() : SIConfig.defaultIntegrity();
+        if (state.getCollisionShape(level, pos).isEmpty()) {
+            return SIConfig.defaultFragileIntegrity();
+        }
+        if (!SIConfig.deriveIntegrityFromHardness()) {
+            return SIConfig.defaultIntegrity();
+        }
+        // No row: derive the entry from the block's own hardness, normalised so
+        // stone's 1.5 lands exactly on defaultIntegrity. Sub-linear (sqrt) so the
+        // very hard end does not run away; unbreakable blocks derive the ceiling.
+        float hardness = state.getDestroySpeed(level, pos);
+        if (hardness < 0) {
+            return 1024;
+        }
+        if (hardness == 0) {
+            return SIConfig.defaultFragileIntegrity();
+        }
+        int derived = Math.round(SIConfig.defaultIntegrity() * (float) Math.sqrt(hardness / 1.5f));
+        return Math.min(1024, Math.max(2, derived));
     }
 
     public static boolean hasRow(BlockState state) {

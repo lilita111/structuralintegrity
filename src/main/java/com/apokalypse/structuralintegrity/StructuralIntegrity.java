@@ -28,6 +28,8 @@ public class StructuralIntegrity {
         NeoForge.EVENT_BUS.register(SIFall.class);
         LOGGER.info("[SI] integrity = stored; the placement cost lives in stored now, so hang is "
                 + "reported but no longer charged; ground = no wbireg row (max+1)");
+        LOGGER.info("[SI] every block has an entry: datamap row first, else derived from hardness "
+                + "(defaultIntegrity * sqrt(h/1.5), unbreakable=1024), else fragile=no collision");
         LOGGER.info("[SI] limits: maxRegion={} defaultIntegrity={}",
                 Integrity.MAX_REGION, Integrity.DEFAULT_INTEGRITY);
         LOGGER.info("[SI] outside the system: air, fluids, plants (BushBlock) and leaves (LeavesBlock); "

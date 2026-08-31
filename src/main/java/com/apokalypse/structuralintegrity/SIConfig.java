@@ -107,8 +107,16 @@ public final class SIConfig {
 
     // ---- base integrity values --------------------------------------------
 
+    private static final ModConfigSpec.BooleanValue DERIVE_FROM_HARDNESS = B
+            .comment("true: a solid block with no datamap row derives its natural integrity",
+                    "from its own hardness - defaultIntegrity * sqrt(hardness / 1.5), so a",
+                    "stone-hardness block lands on defaultIntegrity exactly; unbreakable",
+                    "blocks derive 1024. false: every row-less block gets defaultIntegrity.")
+            .define("deriveIntegrityFromHardness", true);
+
     private static final ModConfigSpec.IntValue DEFAULT_INTEGRITY = B
-            .comment("Natural integrity for a solid block with no datamap row.")
+            .comment("Natural integrity for a solid block with no datamap row; with",
+                    "deriveIntegrityFromHardness it is the scale anchor at stone hardness.")
             .defineInRange("defaultIntegrity", Integrity.DEFAULT_INTEGRITY, 1, 1024);
 
     private static final ModConfigSpec.IntValue DEFAULT_FRAGILE = B
@@ -221,6 +229,10 @@ public final class SIConfig {
 
     public static int failAt() {
         return SPEC.isLoaded() ? FAIL_AT.get() : Integrity.FAIL_AT;
+    }
+
+    public static boolean deriveIntegrityFromHardness() {
+        return !SPEC.isLoaded() || DERIVE_FROM_HARDNESS.get();
     }
 
     public static int defaultIntegrity() {

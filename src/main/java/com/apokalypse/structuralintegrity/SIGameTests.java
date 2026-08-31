@@ -11,8 +11,22 @@ import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.BushBlock;
+import net.minecraft.world.level.block.LeavesBlock;
+import net.minecraft.world.level.block.LiquidBlock;
+import net.minecraft.world.level.block.state.BlockState;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -151,5 +165,49 @@ public final class SIGameTests {
             helper.assertTrue(everAssembled.get() && ownSubLevels == 0,
                     "waiting for revert: everAssembled=" + everAssembled.get() + " ownSubLevels=" + ownSubLevels);
         });
+    }
+
+    /**
+     * Not an assertion - a census. Every block in the registry resolved through the
+     * real runtime pipeline (datamap rows, tags, collision shapes, hardness
+     * derivation) and written to build/integrity-sweep.csv, one entry per block, so
+     * the whole table can be read outside the game. Runs in the gametest server so
+     * a live instance is never touched.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void integritySweep(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        BlockPos pos = helper.absolutePos(BlockPos.ZERO);
+        Map<Integer, Integer> tiers = new TreeMap<>();
+        StringBuilder csv = new StringBuilder("id,integrity,never_anchor,source,structural\n");
+        int vanilla = 0;
+        for (Block block : BuiltInRegistries.BLOCK) {
+            ResourceLocation id = BuiltInRegistries.BLOCK.getKey(block);
+            if (!id.getNamespace().equals("minecraft")) {
+                continue;
+            }
+            vanilla++;
+            BlockState state = block.defaultBlockState();
+            boolean structural = !(state.isAir() || block instanceof LiquidBlock
+                    || block instanceof BushBlock || block instanceof LeavesBlock);
+            int nat = Integrity.naturalOf(level, pos, state);
+            boolean never = Integrity.neverAnchor(level, pos, state);
+            boolean hasRow = block.builtInRegistryHolder().getData(SIDataMaps.NATURAL) != null;
+            csv.append(id.getPath()).append(',').append(nat).append(',').append(never)
+                    .append(',').append(hasRow ? "datamap" : "derived").append(',')
+                    .append(structural).append('\n');
+            if (structural) {
+                tiers.merge(nat, 1, Integer::sum);
+            }
+        }
+        Path out = Path.of("..", "integrity-sweep.csv").toAbsolutePath().normalize();
+        try {
+            Files.writeString(out, csv.toString());
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        StructuralIntegrity.LOGGER.info("[SI] SWEEP {} vanilla blocks -> {} (structural tier -> count: {})",
+                vanilla, out, tiers);
+        helper.succeed();
     }
 }
