@@ -150,6 +150,25 @@ public final class SIEvents {
                 affected.size(), shock, restored);
     }
 
+    /**
+     * The one break criterion: effective integrity (stored minus the worst hanging
+     * face - the exact number the tooltip shows) at or below zero breaks the
+     * block, through the same next-tick destroy pipeline as any spent block
+     * (splinter, breakStrongerBlock and breakOnIntegrityLoss all apply), and the
+     * fall pass then detaches whatever it was holding. Called from every
+     * place/break evaluation, and from the goggle query when
+     * inspectionEnforcesIntegrity is on - a bearer deep in standing terrain is
+     * never within a step of an event, so the query is the only computation that
+     * ever sees its true number.
+     */
+    public static void enforce(ServerLevel level, Integrity.Result r) {
+        if (r.structural() && !r.anchor() && r.integrityMax() <= 0) {
+            StructuralIntegrity.LOGGER.info("[SI] OVERLOADED {} stored={} hang={} -> fails",
+                    fmt(r.pos()), r.stored(), r.hangMax());
+            SIFall.queueDestroy(level, r.pos());
+        }
+    }
+
     private static void run(ServerLevel level, WbiReg reg, String trigger, BlockPos origin,
                             @Nullable BlockPos ghost, @Nullable Integrity.Placed placed,
                             List<BlockPos> disturbed, @Nullable Player player) {
@@ -194,22 +213,9 @@ public final class SIEvents {
             }
         }
 
-        // Overload failure: a block whose worst hanging face outweighs what it has
-        // stored does not get to stand there Overloaded - it fails like any other
-        // spent block, through the same next-tick destroy pipeline (splinter,
-        // breakStrongerBlock and breakOnIntegrityLoss all apply), and the fall
-        // pass then detaches what it was holding. This is the one case where the
-        // touched block itself may break.
-        int failAt = SIConfig.failAt();
         for (List<Integrity.Result> list : List.of(primary, candidates)) {
             for (Integrity.Result r : list) {
-                if (!r.anchor() && r.grounded() && r.hangMax() > 0
-                        && r.integrityMax() <= failAt) {
-                    StructuralIntegrity.LOGGER.info(
-                            "[SI] OVERLOADED {} stored={} hang={} -> fails",
-                            fmt(r.pos()), r.stored(), r.hangMax());
-                    SIFall.queueDestroy(level, r.pos());
-                }
+                enforce(level, r);
             }
         }
 

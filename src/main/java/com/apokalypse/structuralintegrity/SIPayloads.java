@@ -108,6 +108,12 @@ public final class SIPayloads {
             }
             Integrity.Result r = Integrity.compute(level, WbiReg.of(level), pos);
 
+            // The query is the only computation that ever sees a deep bearer's
+            // true number - enforce the break criterion here too (config-gated).
+            if (SIConfig.inspectionEnforcesIntegrity()) {
+                SIEvents.enforce(level, r);
+            }
+
             int flags = 0;
             if (r.anchor()) {
                 flags |= FLAG_ANCHOR;
