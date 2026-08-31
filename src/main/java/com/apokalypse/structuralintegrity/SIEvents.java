@@ -194,6 +194,25 @@ public final class SIEvents {
             }
         }
 
+        // Overload failure: a block whose worst hanging face outweighs what it has
+        // stored does not get to stand there Overloaded - it fails like any other
+        // spent block, through the same next-tick destroy pipeline (splinter,
+        // breakStrongerBlock and breakOnIntegrityLoss all apply), and the fall
+        // pass then detaches what it was holding. This is the one case where the
+        // touched block itself may break.
+        int failAt = SIConfig.failAt();
+        for (List<Integrity.Result> list : List.of(primary, candidates)) {
+            for (Integrity.Result r : list) {
+                if (!r.anchor() && r.grounded() && r.hangMax() > 0
+                        && r.integrityMax() <= failAt) {
+                    StructuralIntegrity.LOGGER.info(
+                            "[SI] OVERLOADED {} stored={} hang={} -> fails",
+                            fmt(r.pos()), r.stored(), r.hangMax());
+                    SIFall.queueDestroy(level, r.pos());
+                }
+            }
+        }
+
         long micros = (System.nanoTime() - t0) / 1000L;
 
         StructuralIntegrity.LOGGER.info("[SI] {} at {} | evaluated={} candidates={} wbireg={} in {}us",
