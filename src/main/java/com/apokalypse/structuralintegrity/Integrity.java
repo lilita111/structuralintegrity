@@ -418,6 +418,18 @@ public final class Integrity {
                 }
             }
         }
+
+        // The cap stopped the walk mid-frontier, before every discovered position was
+        // dequeued and checked. Those positions cost nothing further to look at - they
+        // are already in hand, just unexamined - so a component that is actually
+        // grounded one hop past the cap is still reported grounded instead of a false
+        // DETACHED. Ground reachable only by expanding further stays undetermined,
+        // which is what the cap means.
+        for (BlockPos p : queue) {
+            if (isAnchor(level, reg, p)) {
+                return new Component(List.of(), true, false);
+            }
+        }
         return new Component(out, false, !queue.isEmpty());
     }
 
@@ -534,6 +546,17 @@ public final class Integrity {
             }
         }
         out.capped = !queue.isEmpty();
+        // Same cap-boundary check as collect(): the remaining queue is already
+        // discovered, just unexamined, so a region grounded one hop past the cap is
+        // still reported grounded rather than a false hang.
+        if (out.capped && !out.grounded) {
+            for (BlockPos p : queue) {
+                if (isAnchor(level, reg, p)) {
+                    out.grounded = true;
+                    break;
+                }
+            }
+        }
         return out;
     }
 
