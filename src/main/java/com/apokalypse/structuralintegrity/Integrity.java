@@ -627,7 +627,8 @@ public final class Integrity {
      */
     public static Component collect(ServerLevel level, WbiReg reg, BlockPos seed,
                                     @Nullable BlockPos ghost, int max) {
-        if (!isStructural(level, seed, ghost) || isAnchor(level, reg, seed)) {
+        if (!isStructural(level, seed, ghost) || isAnchor(level, reg, seed)
+                || isSpent(reg, seed)) {
             return new Component(List.of(), true, false);
         }
 
@@ -646,7 +647,9 @@ public final class Integrity {
             out.add(p);
             for (Direction dir : DIRS) {
                 BlockPos n = p.relative(dir);
-                if (!isStructural(level, n, ghost)) {
+                // A spent block (breakOnIntegrityLoss=false) is a gap: it stands,
+                // but nothing reaches ground through it.
+                if (!isStructural(level, n, ghost) || isSpent(reg, n)) {
                     continue;
                 }
                 BlockPos ni = n.immutable();
@@ -867,6 +870,18 @@ public final class Integrity {
     /** True when this position is ground: untouched, and allowed to be. A pure read. */
     public static boolean isAnchor(ServerLevel level, WbiReg reg, BlockPos pos) {
         return peekAt(level, reg, pos) == WbiReg.ANCHOR;
+    }
+
+    /**
+     * True when the block is standing but no longer carries anything:
+     * breakOnIntegrityLoss=false pinned it at failAt instead of destroying it.
+     * A raw row read - never materialises a row, and always false while the
+     * config still breaks spent blocks.
+     */
+    public static boolean isSpent(WbiReg reg, BlockPos pos) {
+        return !SIConfig.breakOnIntegrityLoss()
+                && !reg.isAnchor(pos)
+                && reg.get(pos) <= SIConfig.failAt();
     }
 
     /**

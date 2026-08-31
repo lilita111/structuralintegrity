@@ -154,10 +154,25 @@ public final class SIFall {
         java.util.ArrayDeque<BlockPos> work = new java.util.ArrayDeque<>(positions);
         Set<BlockPos> done = new HashSet<>();
         int failAt = SIConfig.failAt();
+        boolean breakOnLoss = SIConfig.breakOnIntegrityLoss();
         while (!work.isEmpty()) {
             BlockPos pos = work.poll();
             if (!done.add(pos) || !Integrity.isStructural(level, pos, null)) {
                 continue; // already handled or already gone
+            }
+            if (!breakOnLoss) {
+                // The block stays in the world, pinned spent. It stops conducting
+                // support (collect() treats spent rows as gaps), so whatever it was
+                // holding detaches around it. No break happened, so no splintering.
+                reg.set(pos, failAt);
+                StructuralIntegrity.LOGGER.info("[SI] SPENT {} held in place, load shed", fmt(pos));
+                for (Direction d : Direction.values()) {
+                    BlockPos n = pos.relative(d);
+                    if (Integrity.isStructural(level, n, null)) {
+                        fall.computeIfAbsent(level, l -> new LinkedHashSet<>()).add(n.immutable());
+                    }
+                }
+                continue;
             }
             var broken = level.getBlockState(pos).getBlock();
             boolean ok = level.destroyBlock(pos, true);
