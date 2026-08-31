@@ -32,6 +32,15 @@ public final class SIConfig {
                     "Air, fluids and plants are always ignored; this list adds to that.")
             .defineListAllowEmpty("nonStructuralBlocks", List.of(), () -> "", SIConfig::isBlockId);
 
+    private static final ModConfigSpec.ConfigValue<List<? extends String>> INTEGRITY_PATTERNS = B
+            .comment("Wildcard integrity overrides, entries \"<id-pattern>=<integrity>\" where *",
+                    "matches any run of characters in the full block id, e.g.",
+                    "\"create:*_casing=40\" or \"mekanism:*_ore=34\". First matching entry wins.",
+                    "A datamap row always beats a pattern; a pattern beats the hardness",
+                    "derivation. Applies live on file save.")
+            .defineListAllowEmpty("integrityPatterns", List.of(), () -> "",
+                    SIConfig::isPatternEntry);
+
     // ---- anchors ----------------------------------------------------------
 
     private static final ModConfigSpec.ConfigValue<List<? extends String>> DEFAULT_ANCHOR_BLOCKS = B
@@ -229,6 +238,27 @@ public final class SIConfig {
 
     public static int failAt() {
         return SPEC.isLoaded() ? FAIL_AT.get() : Integrity.FAIL_AT;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static List<String> integrityPatterns() {
+        return SPEC.isLoaded() ? (List<String>) INTEGRITY_PATTERNS.get() : List.of();
+    }
+
+    private static boolean isPatternEntry(Object o) {
+        if (!(o instanceof String s)) {
+            return false;
+        }
+        int eq = s.lastIndexOf('=');
+        if (eq <= 0 || eq == s.length() - 1) {
+            return false;
+        }
+        try {
+            int v = Integer.parseInt(s.substring(eq + 1).trim());
+            return v >= 1 && v <= 1024;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     public static boolean deriveIntegrityFromHardness() {

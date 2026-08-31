@@ -22,6 +22,13 @@ public class StructuralIntegrity {
 
     public StructuralIntegrity(IEventBus modBus, ModContainer container) {
         container.registerConfig(ModConfig.Type.SERVER, SIConfig.SPEC);
+        // Pattern rules resolve lazily and cache per block; any config load or
+        // live file edit drops the cache so integrityPatterns applies on save.
+        modBus.addListener((net.neoforged.fml.event.config.ModConfigEvent event) -> {
+            if (event.getConfig().getSpec() == SIConfig.SPEC) {
+                SIPatterns.invalidate();
+            }
+        });
         modBus.addListener(SIDataMaps::onRegisterDataMaps);
         modBus.addListener(SIPayloads::register);
         NeoForge.EVENT_BUS.register(SIEvents.class);

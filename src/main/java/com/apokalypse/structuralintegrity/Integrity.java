@@ -879,6 +879,12 @@ public final class Integrity {
         if (row != null) {
             return row.integrity();
         }
+        // Config wildcard patterns - explicit intent, so they also beat the
+        // fragile (no-collision) classification below.
+        int pattern = SIPatterns.lookup(state.getBlock());
+        if (pattern != SIPatterns.NO_MATCH) {
+            return pattern;
+        }
         if (state.getCollisionShape(level, pos).isEmpty()) {
             return SIConfig.defaultFragileIntegrity();
         }
