@@ -9,7 +9,7 @@
     "#minecraft:leaves":         { "integrity": 1,  "never_anchor": true },
     "minecraft:hay_block":       { "integrity": 0,  "never_anchor": true },
     "#minecraft:sand":           { "integrity": 2,  "never_anchor": true },
-    "#minecraft:dirt":           { "integrity": 3,  "never_anchor": true },
+    "#minecraft:dirt":           { "integrity": 4,  "never_anchor": true },
     "minecraft:gravel":          { "integrity": 2,  "never_anchor": true },
 
     "#minecraft:wool":           { "integrity": 3 },
