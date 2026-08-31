@@ -16,7 +16,7 @@
     "minecraft:ladder":          { "integrity": 2 },
     "minecraft:glass":           { "integrity": 3 },
     "minecraft:cobblestone":     { "integrity": 10 },
-    "minecraft:stone":           { "integrity": 12 },
+    "minecraft:stone":           { "integrity": 64 },
     "minecraft:deepslate":       { "integrity": 20 },
     "minecraft:obsidian":        { "integrity": 40 },
     "minecraft:iron_block":      { "integrity": 80 },

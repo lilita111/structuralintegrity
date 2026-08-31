@@ -52,11 +52,11 @@ public final class Integrity {
      * How far a placement's charge is allowed to descend before it is abandoned.
      *
      * This is a chain, not a fill, so it is bounded by the height of the structure
-     * rather than by its mass - a couple of hundred is already past bedrock. Reaching
-     * it means the support graph has led somewhere unreasonable and the pass gives up
-     * rather than walking forever; it is reported, never silent.
+     * rather than by its mass - 1024 covers the full build height with room for a
+     * winding path. Reaching it means the support graph has led somewhere unreasonable
+     * and the pass gives up rather than walking forever; it is reported, never silent.
      */
-    public static final int MAX_LOAD_PATH = 256;
+    public static final int MAX_LOAD_PATH = 1024;
     /** Default for a solid block with no row in naturalintegrityreg. */
     public static final int DEFAULT_INTEGRITY = 8;
     /** Default for a block with no collision shape - a torch, a flower, a rail. */
@@ -171,7 +171,7 @@ public final class Integrity {
             if (!isStructural(level, n, null)) {
                 continue;
             }
-            int at = storedAt(level, reg, n);
+            int at = peekAt(level, reg, n);
             if (at > bestAt) {
                 bestAt = at;
                 best = n;
@@ -347,8 +347,13 @@ public final class Integrity {
      * off, just its max natural. The grant is paid here - at row creation - and
      * only here, so it is paid once; from then on the chain takes its -1 from the
      * block like from any other, and the grant wears away instead of renewing.
+     *
+     * @param creating true when the caller is about to write this value as a new
+     *                 row - the clump-init line logs then and only then. A pure
+     *                 peek asks the same question and logs nothing, because
+     *                 nothing happened.
      */
-    private static int initialValue(ServerLevel level, BlockPos pos, int base) {
+    private static int initialValue(ServerLevel level, BlockPos pos, int base, boolean creating) {
         int threshold = SIConfig.clumpBracingThreshold();
         if (threshold <= 0) {
             return base;
@@ -359,8 +364,10 @@ public final class Integrity {
         }
         int natural = naturalOf(level, pos, state);
         int value = SIConfig.clumpAddsOnTop() ? base + natural : Math.max(base, natural);
-        StructuralIntegrity.LOGGER.info("[SI] clump init {},{},{}: {} -> {} (natural {})",
-                pos.getX(), pos.getY(), pos.getZ(), base, value, natural);
+        if (creating) {
+            StructuralIntegrity.LOGGER.info("[SI] clump init {},{},{}: {} -> {} (natural {})",
+                    pos.getX(), pos.getY(), pos.getZ(), base, value, natural);
+        }
         return value;
     }
 
@@ -416,7 +423,7 @@ public final class Integrity {
             if (!isStructural(level, n, null)) {
                 continue;
             }
-            int at = storedAt(level, reg, n);
+            int at = peekAt(level, reg, n);
             if (at == WbiReg.ANCHOR) {
                 founded = true;
                 break;
@@ -429,14 +436,14 @@ public final class Integrity {
         if (founded) {
             // Touching ground anywhere. Full strength, and nothing is charged -
             // rock takes the load and passes none on.
-            int assigned = initialValue(level, pos, natural);
+            int assigned = initialValue(level, pos, natural, true);
             reg.set(pos, assigned);
             return new Placed(pos.immutable(), natural, assigned,
                     support.immutable(), WbiReg.ANCHOR, true, List.of(), 0, false, "");
         }
 
         // Inherit the best footing, then charge the structure the load rests on.
-        int assigned = initialValue(level, pos, Math.min(natural, best));
+        int assigned = initialValue(level, pos, Math.min(natural, best), true);
         reg.set(pos, assigned);
         Chained d = chain(level, reg, support, pos, null, -1);
         return new Placed(pos.immutable(), natural, assigned,
@@ -463,7 +470,7 @@ public final class Integrity {
             if (!isStructural(level, n, ghost) || !isAnchor(level, reg, n)) {
                 continue;
             }
-            reg.set(n, initialValue(level, n, naturalOf(level, n, level.getBlockState(n))));
+            reg.set(n, initialValue(level, n, naturalOf(level, n, level.getBlockState(n)), true));
             out.add(n.immutable());
         }
         return out;
@@ -631,7 +638,7 @@ public final class Integrity {
         }
 
         int natural = naturalOf(level, pos, state);
-        int reading = storedAt(level, reg, pos);
+        int reading = peekAt(level, reg, pos);
         boolean anchor = reading == WbiReg.ANCHOR;
         int stored = anchor ? natural : reading;
 
@@ -735,13 +742,31 @@ public final class Integrity {
     }
 
     /**
-     * The wbireg reading for a position, and the only place anchor-ness is decided.
+     * May this block never be ground? Ground is the permissive default - but
+     * nothing with no collision shape can hold anything up, so it never gets to be
+     * ground either way; that is the same floor naturalOf already gave it. Listed
+     * rows still decide for themselves, unless the config's defaultAnchorBlocks
+     * forces anchor status back on.
+     */
+    private static boolean neverAnchor(ServerLevel level, BlockPos pos, BlockState state) {
+        BlockIntegrity row = state.getBlock().builtInRegistryHolder().getData(SIDataMaps.NATURAL);
+        boolean never = row != null ? row.neverAnchor()
+                : naturalOf(level, pos, state) == SIConfig.defaultFragileIntegrity();
+        return never && !SIConfig.defaultAnchorBlocks().contains(state.getBlock());
+    }
+
+    /**
+     * The wbireg reading for a position, for the WRITE path - {@link #chain} and
+     * everything else that is about to modify the row it asks for.
      *
      * Ground is "no row". Some blocks may never mean that: loose material and growth
      * hold themselves up and nothing else. Rather than carve out a second kind of
-     * ground, such a block is simply given the row it should have had, at its own
-     * natural, the first time the solver looks at it - after which it is an ordinary
-     * tracked block and every rule below applies to it unchanged.
+     * ground, such a block is given the row it should have had, at its own natural,
+     * the first time the solver WRITES near it - after which it is an ordinary
+     * tracked block and every rule below applies to it unchanged. Reads must not do
+     * this - a goggle query or a region flood that materialised rows changed the
+     * world by looking at it, and the numbers drifted with observation order; they
+     * go through {@link #peekAt} instead.
      *
      * This is the air rule one step in. Air says "not part of the structure";
      * never-anchor says "part of the structure, never the thing holding it up".
@@ -754,28 +779,38 @@ public final class Integrity {
             return v;
         }
         BlockState state = level.getBlockState(pos);
-        BlockIntegrity row = state.getBlock().builtInRegistryHolder().getData(SIDataMaps.NATURAL);
-        int natural = naturalOf(level, pos, state);
-        // Ground is the permissive default - but nothing with no collision shape can
-        // hold anything up, so it never gets to be ground either way; that is the same
-        // floor naturalOf already gave it below. Listed rows still decide for themselves,
-        // unless the config's defaultAnchorBlocks forces anchor status back on.
-        boolean neverAnchor = row != null ? row.neverAnchor()
-                : natural == SIConfig.defaultFragileIntegrity();
-        if (neverAnchor && SIConfig.defaultAnchorBlocks().contains(state.getBlock())) {
-            neverAnchor = false;
-        }
-        if (!neverAnchor) {
+        if (!neverAnchor(level, pos, state)) {
             return WbiReg.ANCHOR;
         }
-        int init = initialValue(level, pos, natural);
+        int init = initialValue(level, pos, naturalOf(level, pos, state), true);
         reg.set(pos, init);
         return init;
     }
 
-    /** True when this position is ground: untouched, and allowed to be. */
+    /**
+     * {@link #storedAt} without the side effect: exactly what it would answer, with
+     * no row created and nothing logged. Every read path asks here - the goggle
+     * read-out, the region floods, the placement's best-connection scan - because a
+     * read must not write. An untracked never-anchor block answers with the value
+     * it WOULD enter tracking with, computed against its neighbours as they stand
+     * now - live, not frozen at whatever the clump census said the first time
+     * something happened to look.
+     */
+    public static int peekAt(ServerLevel level, WbiReg reg, BlockPos pos) {
+        int v = reg.get(pos);
+        if (v != WbiReg.ANCHOR) {
+            return v;
+        }
+        BlockState state = level.getBlockState(pos);
+        if (!neverAnchor(level, pos, state)) {
+            return WbiReg.ANCHOR;
+        }
+        return initialValue(level, pos, naturalOf(level, pos, state), false);
+    }
+
+    /** True when this position is ground: untouched, and allowed to be. A pure read. */
     public static boolean isAnchor(ServerLevel level, WbiReg reg, BlockPos pos) {
-        return storedAt(level, reg, pos) == WbiReg.ANCHOR;
+        return peekAt(level, reg, pos) == WbiReg.ANCHOR;
     }
 
     /**

@@ -41,6 +41,7 @@ public class StructuralIntegrity {
         LOGGER.info("[SI] snap: the chain stops at the first spent block; config picks which side of the snap breaks");
         LOGGER.info("[SI] falling: a component that cannot reach ground is assembled by sable, up to {} blocks",
                 SIFall.MAX_ASSEMBLY);
-        LOGGER.info("[SI] never_anchor blocks get a wbireg row on sight - loose material and growth are never ground");
+        LOGGER.info("[SI] reads never write: goggle queries and region floods peek, only the solver's "
+                + "write paths materialise wbireg rows; never_anchor blocks enter tracking at first write");
     }
 }
