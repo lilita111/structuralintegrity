@@ -4,20 +4,30 @@ import dev.ryanhcode.sable.api.SubLevelAssemblyHelper;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.BoundingBox3i;
+import dev.ryanhcode.sable.companion.math.BoundingBox3ic;
+import dev.ryanhcode.sable.companion.math.Pose3d;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
+import dev.ryanhcode.sable.sublevel.plot.LevelPlot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.block.Rotation;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.neoforge.event.tick.LevelTickEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import org.joml.Quaterniondc;
+import org.joml.Vector3d;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
  * Stage 2 - the fall. Stage 1 decided what is disconnected; this turns that
@@ -48,6 +58,20 @@ public final class SIFall {
 
     private static final Map<ServerLevel, LinkedHashSet<BlockPos>> PENDING_FALL = new HashMap<>();
     private static final Map<ServerLevel, LinkedHashSet<BlockPos>> PENDING_DESTROY = new HashMap<>();
+
+    /**
+     * Sub-levels this mod itself assembled, as opposed to any other sub-level that happens
+     * to exist in the same {@link ServerLevel} - sable is a shared physics engine, and
+     * {@link ServerSubLevelContainer#getAllSubLevels} returns every sub-level in the level,
+     * including ones other mods (or sable's own gametest suite) created for entirely
+     * unrelated reasons. {@link #checkForRevert} must never touch those: forcing one back
+     * into blocks while its owner is still mid-flight with it is exactly what was crashing
+     * sable's own {@code PhysicsTest.testSnag} with "Body has been removed" - this mod was
+     * reverting a rigid body sable's own test was still actively applying impulses to.
+     * A {@link WeakHashMap}-backed set so entries fall out once the sub-level is gone.
+     */
+    private static final Set<ServerSubLevel> OWNED_SUB_LEVELS =
+            Collections.newSetFromMap(new WeakHashMap<>());
 
     /**
      * Positions an assembly has already been attempted at, and the tick it happened.
@@ -258,10 +282,240 @@ public final class SIFall {
             reg.clear(p);
         }
 
+        OWNED_SUB_LEVELS.add(subLevel);
+
         StructuralIntegrity.LOGGER.info("[SI] SUBLEVEL created at {} n={} bounds=[{},{},{} .. {},{},{}]",
                 fmt(anchor), blocks.size(),
                 bounds.minX, bounds.minY, bounds.minZ, bounds.maxX, bounds.maxY, bounds.maxZ);
         return true;
+    }
+
+    // =====================================================================
+    // Stage 3 - the landing. A sub-level whose pose has settled back onto the
+    // grid stops being a physics object and becomes regular blocks again.
+    // =====================================================================
+
+    /** Below this speed (in each of linear/angular, squared) a sub-level counts as at rest. */
+    private static final double MOVING_THRESHOLD_SQ = 1.0e-4;
+
+    /** How far a transformed anchor may sit from a block center and still count as "in place". */
+    private static final double POSITION_EPSILON = 0.02;
+
+    /** How far a rotated unit axis may miss its target and still count as grid-aligned. */
+    private static final double ORIENTATION_EPSILON = 0.02;
+
+    /**
+     * Block-state rotation matching each of {@link SubLevelAssemblyHelper.AssemblyTransform}'s
+     * angles, which are COUNTER-clockwise quarter turns: its position math is
+     * {@link Vec3#yRot}, and yRot(+90 degrees) sends NORTH (0,0,-1) to (-1,0,0), which is WEST.
+     * Index 1 is therefore COUNTERCLOCKWISE_90 and index 3 CLOCKWISE_90; pairing the angle
+     * with the opposite Rotation lands stairs and other facing blocks mirrored about the
+     * fall axis while the geometry itself is placed correctly.
+     */
+    private static final Rotation[] ROTATION_FOR_ANGLE =
+            {Rotation.NONE, Rotation.COUNTERCLOCKWISE_90, Rotation.CLOCKWISE_180, Rotation.CLOCKWISE_90};
+
+    @SubscribeEvent
+    public static void onLevelTick(LevelTickEvent.Post event) {
+        if (!(event.getLevel() instanceof ServerLevel level)) {
+            return;
+        }
+        checkForRevert(level);
+    }
+
+    /**
+     * Sub-levels that have been above {@link #MOVING_THRESHOLD_SQ} at least once since this
+     * mod assembled them. A body is born perfectly aligned - sable places it at exactly the
+     * blocks it was built from, so its anchor sits dead on a block centre with an identity
+     * orientation - which means an alignment check on a sub-level that has never moved
+     * always passes and simply undoes the fall the tick after it started. Only a body that
+     * has actually travelled somewhere can meaningfully be said to have landed.
+     */
+    private static final Set<ServerSubLevel> HAS_MOVED =
+            Collections.newSetFromMap(new WeakHashMap<>());
+
+    /**
+     * Consecutive ticks each sub-level has been at rest. The alignment check runs only within
+     * {@link #REST_CHECK_TICKS} of coming to rest: the engine can zero a landed body's
+     * velocity a tick or two before its pose finishes snapping into place, so testing only the
+     * moving-to-resting transition tick can miss the alignment, while testing every tick
+     * forever makes a body parked permanently off-grid cost pose math for the rest of the
+     * session. Both maps are {@link WeakHashMap}-backed so entries for removed or reverted
+     * sub-levels fall out on their own.
+     */
+    private static final Map<ServerSubLevel, Integer> REST_TICKS = new WeakHashMap<>();
+
+    /**
+     * How long after coming to rest a sub-level stays eligible to revert. One second.
+     */
+    private static final int REST_CHECK_TICKS = 20;
+
+    private static void checkForRevert(ServerLevel level) {
+        ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
+        if (container == null) {
+            return;
+        }
+
+        WbiReg reg = WbiReg.of(level);
+        // copy: reverting removes from the container we'd otherwise be iterating
+        for (ServerSubLevel subLevel : new ArrayList<>(container.getAllSubLevels())) {
+            if (subLevel.isRemoved() || !OWNED_SUB_LEVELS.contains(subLevel)) {
+                continue;
+            }
+
+            boolean moving = subLevel.latestLinearVelocity.lengthSquared() >= MOVING_THRESHOLD_SQ
+                    || subLevel.latestAngularVelocity.lengthSquared() >= MOVING_THRESHOLD_SQ;
+
+            if (moving) {
+                HAS_MOVED.add(subLevel);
+                REST_TICKS.remove(subLevel);
+                continue;
+            }
+
+            // Still sitting where it was assembled - not a landing, so there is nothing to
+            // revert. Reverting here would put the blocks back exactly where the fall pass
+            // just took them from, and the next pass would detach them again.
+            if (!HAS_MOVED.contains(subLevel)) {
+                continue;
+            }
+
+            if (REST_TICKS.merge(subLevel, 1, Integer::sum) > REST_CHECK_TICKS) {
+                continue;
+            }
+
+            tryRevert(level, reg, subLevel);
+        }
+    }
+
+    private static void tryRevert(ServerLevel level, WbiReg reg, ServerSubLevel subLevel) {
+        Pose3d pose = subLevel.logicalPose();
+        LevelPlot plot = subLevel.getPlot();
+        BlockPos localAnchor = plot.getCenterBlock();
+
+        // Pose3dc#transformPosition is world = orientation * ((local - rotationPoint) * scale)
+        // + position, and sable sets rotationPoint to the centre of mass expressed in PLOT
+        // coordinates - which are plot-grid coordinates thousands of blocks out, not offsets
+        // from the plot anchor. So the local point handed to it has to be the plot anchor's
+        // own centre; transforming the local origin instead yields -R*centreOfMass + position,
+        // a point with no geometric meaning that is never near a block centre.
+        Vector3d worldAnchor = new Vector3d(
+                localAnchor.getX() + 0.5, localAnchor.getY() + 0.5, localAnchor.getZ() + 0.5);
+        pose.transformPosition(worldAnchor);
+
+        Vector3d up = pose.orientation().transform(new Vector3d(0, 1, 0));
+        Integer angle = alignedYawAngle(pose.orientation());
+        boolean nearCenter = isNearBlockCenter(worldAnchor);
+
+        // TEMP DEBUG (SIGameTests stage 3 investigation) - remove once revert is confirmed working.
+        StructuralIntegrity.LOGGER.info(
+                "[SI-DEBUG] tryRevert subLevel={} upDist={} angle={} worldAnchor=({},{},{}) fracs=({},{},{}) nearCenter={}",
+                System.identityHashCode(subLevel), up.distance(0, 1, 0), angle,
+                worldAnchor.x, worldAnchor.y, worldAnchor.z,
+                worldAnchor.x - Math.floor(worldAnchor.x),
+                worldAnchor.y - Math.floor(worldAnchor.y),
+                worldAnchor.z - Math.floor(worldAnchor.z),
+                nearCenter);
+
+        if (angle == null || !nearCenter) {
+            return;
+        }
+
+        BlockPos targetAnchor = BlockPos.containing(worldAnchor.x, worldAnchor.y, worldAnchor.z);
+        revert(level, reg, subLevel, plot, localAnchor, targetAnchor, angle);
+    }
+
+    /**
+     * Checks the sub-level's orientation against the four quarter-turns using the exact
+     * same {@link Vec3#yRot} operation {@link SubLevelAssemblyHelper.AssemblyTransform}
+     * itself applies - so whatever sign convention the physics engine's quaternion uses,
+     * the angle this returns is guaranteed to mean what AssemblyTransform thinks it means.
+     *
+     * @return 0-3, or null if not aligned to a quarter-turn (or tipped off of pure yaw)
+     */
+    private static Integer alignedYawAngle(Quaterniondc orientation) {
+        Vector3d up = orientation.transform(new Vector3d(0, 1, 0));
+        if (up.distance(0, 1, 0) > ORIENTATION_EPSILON) {
+            return null; // pitched or rolled - vanilla block states can't represent this anyway
+        }
+
+        Vector3d facing = orientation.transform(new Vector3d(1, 0, 0));
+        Vec3 facingWorld = new Vec3(facing.x, facing.y, facing.z);
+
+        for (int angle = 0; angle < 4; angle++) {
+            Vec3 candidate = new Vec3(1, 0, 0).yRot((float) (angle * Math.PI / 2.0));
+            if (facingWorld.distanceTo(candidate) <= ORIENTATION_EPSILON) {
+                return angle;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isNearBlockCenter(Vector3d pos) {
+        return isNearHalf(pos.x) && isNearHalf(pos.y) && isNearHalf(pos.z);
+    }
+
+    private static boolean isNearHalf(double coord) {
+        double frac = coord - Math.floor(coord);
+        return Math.abs(frac - 0.5) <= POSITION_EPSILON;
+    }
+
+    /**
+     * Moves every block currently in the plot back into the world at the aligned anchor,
+     * the exact mirror of {@link #assemble}: same {@link SubLevelAssemblyHelper#moveBlocks},
+     * anchors swapped, and {@link WbiReg#clear} on the destinations instead of the sources.
+     * Clearing a destination row is also the entire "set as anchor" step - a cleared row
+     * reads as {@link WbiReg#ANCHOR} until {@link Integrity#storedAt} re-derives it from
+     * whatever block actually landed there, anchor-eligible or not.
+     */
+    private static void revert(ServerLevel level, WbiReg reg, ServerSubLevel subLevel, LevelPlot plot,
+                                BlockPos localAnchor, BlockPos targetAnchor, int angle) {
+        BoundingBox3ic bounds = plot.getBoundingBox();
+        if (bounds.volume() <= 0) {
+            return;
+        }
+
+        List<BlockPos> blocks = new ArrayList<>();
+        for (BlockPos p : BlockPos.betweenClosed(bounds.minX(), bounds.minY(), bounds.minZ(),
+                bounds.maxX(), bounds.maxY(), bounds.maxZ())) {
+            if (!level.getBlockState(p).isAir()) {
+                blocks.add(p.immutable());
+            }
+        }
+        if (blocks.isEmpty()) {
+            return;
+        }
+
+        SubLevelAssemblyHelper.AssemblyTransform transform = new SubLevelAssemblyHelper.AssemblyTransform(
+                localAnchor, targetAnchor, angle, ROTATION_FOR_ANGLE[angle], level);
+
+        // Make sure the world can actually take these blocks back before destroying the plot's copy.
+        for (BlockPos p : blocks) {
+            BlockPos dest = transform.apply(p);
+            if (!level.getBlockState(dest).isAir()) {
+                StructuralIntegrity.LOGGER.warn(
+                        "[SI] revert at {} SUPPRESSED, destination {} is occupied", fmt(targetAnchor), fmt(dest));
+                return;
+            }
+        }
+
+        SubLevelAssemblyHelper.moveBlocks(level, transform, blocks);
+
+        // The blocks are back in the world at these positions; anything that belongs there
+        // as an anchor will be re-derived the next time Integrity looks at it.
+        for (BlockPos p : blocks) {
+            reg.clear(transform.apply(p));
+        }
+
+        // No explicit removal: emptying the plot is the removal. Every one of the block
+        // clears above reaches SableCommonEvents#handleBlockChange, which recomputes the
+        // plot's bounding box; once the last block is gone the box is empty and
+        // ServerSubLevel#onPlotBoundsChanged calls markRemoved, so the container drops the
+        // sub-level on its next processSubLevelRemovals pass. Calling ServerSubLevel#onRemove
+        // here instead - as this did - runs the removal CALLBACK without any of the
+        // bookkeeping SubLevelContainer#removeSubLevel does around it, leaving the sub-level
+        // in getAllSubLevels and its plot slot occupied forever.
+        StructuralIntegrity.LOGGER.info("[SI] REVERTED sub-level to {} n={} angle={}deg sableMarkedRemoved={}",
+                fmt(targetAnchor), blocks.size(), angle * 90, subLevel.isRemoved());
     }
 
     // =====================================================================
