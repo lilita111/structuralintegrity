@@ -387,20 +387,33 @@ public final class SIFall {
         }
     }
 
+    /**
+     * World position of a sub-level's plot anchor: the point that sits exactly on a block
+     * centre when, and only when, the sub-level is aligned to the world grid.
+     *
+     * The trap this exists to close: {@code pose.transformPosition(new Vector3d())} looks like
+     * "where is this sub-level in the world" and is not. {@code Pose3dc#transformPosition} is
+     * {@code world = orientation * ((local - rotationPoint) * scale) + position}, and sable
+     * sets {@code rotationPoint} to the centre of mass expressed in PLOT coordinates - plot-grid
+     * coordinates millions of blocks out, not an offset from the plot anchor. Handing it the
+     * local origin therefore yields {@code -R * centreOfMass + position}, a point with no
+     * geometric meaning that is essentially never near a block centre. The local point has to
+     * be the plot anchor's own centre.
+     */
+    public static Vector3d worldAnchorOf(ServerSubLevel subLevel) {
+        BlockPos localAnchor = subLevel.getPlot().getCenterBlock();
+        Vector3d worldAnchor = new Vector3d(
+                localAnchor.getX() + 0.5, localAnchor.getY() + 0.5, localAnchor.getZ() + 0.5);
+        subLevel.logicalPose().transformPosition(worldAnchor);
+        return worldAnchor;
+    }
+
     private static void tryRevert(ServerLevel level, WbiReg reg, ServerSubLevel subLevel) {
         Pose3d pose = subLevel.logicalPose();
         LevelPlot plot = subLevel.getPlot();
         BlockPos localAnchor = plot.getCenterBlock();
 
-        // Pose3dc#transformPosition is world = orientation * ((local - rotationPoint) * scale)
-        // + position, and sable sets rotationPoint to the centre of mass expressed in PLOT
-        // coordinates - which are plot-grid coordinates thousands of blocks out, not offsets
-        // from the plot anchor. So the local point handed to it has to be the plot anchor's
-        // own centre; transforming the local origin instead yields -R*centreOfMass + position,
-        // a point with no geometric meaning that is never near a block centre.
-        Vector3d worldAnchor = new Vector3d(
-                localAnchor.getX() + 0.5, localAnchor.getY() + 0.5, localAnchor.getZ() + 0.5);
-        pose.transformPosition(worldAnchor);
+        Vector3d worldAnchor = worldAnchorOf(subLevel);
 
         Vector3d up = pose.orientation().transform(new Vector3d(0, 1, 0));
         Integer angle = alignedYawAngle(pose.orientation());

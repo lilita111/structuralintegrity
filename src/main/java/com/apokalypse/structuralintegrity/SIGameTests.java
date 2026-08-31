@@ -103,10 +103,12 @@ public final class SIGameTests {
         double minZ = Math.min(nearCorner.getZ(), farCorner.getZ()) - BOUNDS_MARGIN;
         double maxZ = Math.max(nearCorner.getZ(), farCorner.getZ()) + BOUNDS_MARGIN;
 
+        // SIFall#worldAnchorOf, not pose.transformPosition(new Vector3d()) - see its javadoc.
+        // Transforming the local origin returns a point millions of blocks from the sub-level,
+        // so this filter matched nothing and the test reported "stage 2 never created a
+        // sub-level" while the log plainly showed stage 2 creating one.
         java.util.function.Predicate<ServerSubLevel> ownedByThisTest = sub -> {
-            var pose = sub.logicalPose();
-            var pos = new org.joml.Vector3d();
-            pose.transformPosition(pos);
+            var pos = SIFall.worldAnchorOf(sub);
             return pos.x >= minX && pos.x <= maxX
                     && pos.y >= minY && pos.y <= maxY
                     && pos.z >= minZ && pos.z <= maxZ;
@@ -122,9 +124,14 @@ public final class SIGameTests {
                 everAssembled.set(true);
             }
             for (ServerSubLevel sub : ownSubLevels) {
-                var pose = sub.logicalPose();
-                var pos = new org.joml.Vector3d();
-                pose.transformPosition(pos);
+                // Same trap as the filter above, and it made this trace lie: with the
+                // orientation still identity the origin transform's Y component happens to
+                // read as a plausible world Y, so ticks 1-21 looked like a clean fall. The
+                // moment the body tilted on landing, the plot-scale X/Z of -R*centreOfMass
+                // leaked into Y and the trace showed y=27947 -> 40331 -> 22416 -> 10267,
+                // which reads as the sub-level being flung into the sky and is nothing of
+                // the sort - it decays exactly as the angular velocity decays.
+                var pos = SIFall.worldAnchorOf(sub);
                 StructuralIntegrity.LOGGER.info(
                         "[SI-TEST] tick={} subLevel pos=({},{},{}) linVelSq={} angVelSq={}",
                         helper.getTick(), pos.x, pos.y, pos.z,
