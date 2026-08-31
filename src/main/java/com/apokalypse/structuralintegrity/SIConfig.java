@@ -73,6 +73,13 @@ public final class SIConfig {
                     "sides; both false breaks neither - the chain stays spent but standing.")
             .define("breakStrongerBlock", false);
 
+    private static final ModConfigSpec.BooleanValue REVERSE_INTEGRITY_ON_BREAK = B
+            .comment("true: destroying a block runs the chain in reverse - the same walk from",
+                    "its support toward ground, +1 per block instead of -1, capped at each",
+                    "block's own natural integrity. Values above natural (clump grants) are",
+                    "left alone, never cut down.")
+            .define("reverseIntegrityOnBreak", true);
+
     private static final ModConfigSpec.IntValue MAX_LOAD_PATH = B
             .comment("How many blocks the placement charge may descend before giving up.")
             .defineInRange("maxLoadPath", Integrity.MAX_LOAD_PATH, 1, 4096);
@@ -176,6 +183,10 @@ public final class SIConfig {
 
     public static boolean breakStrongerBlock() {
         return SPEC.isLoaded() && BREAK_STRONGER_BLOCK.get();
+    }
+
+    public static boolean reverseIntegrityOnBreak() {
+        return SPEC.isLoaded() && REVERSE_INTEGRITY_ON_BREAK.get();
     }
 
     public static int maxLoadPath() {

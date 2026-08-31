@@ -293,6 +293,65 @@ public final class Integrity {
     }
 
     /**
+     * The reverse of {@link #degrade}: destroying a block takes its load off the
+     * chain that carried it, so the same walk runs from the destroyed block's
+     * support toward ground, and each block gains one point back instead of
+     * losing one. The gain is capped at the block's own natural integrity - it
+     * never heals past what it is - and a value already above natural (a clump
+     * grant) is left where it stands, not cut down. Nothing can fail from
+     * gaining, so this walk has no snap.
+     *
+     * Same skeleton as {@link #degrade} on purpose: same support rule, same
+     * ground / loop / depth stops. The only asymmetry is the sign.
+     *
+     * @param removed the block(s) being destroyed, excluded from the path the
+     *                way {@link #degrade} excludes the placed block
+     */
+    public static Degraded restore(ServerLevel level, WbiReg reg, BlockPos start,
+                                   @Nullable Set<BlockPos> removed) {
+        Set<BlockPos> visited = new HashSet<>();
+        if (removed != null) {
+            for (BlockPos r : removed) {
+                visited.add(r.immutable());
+            }
+        }
+        StringBuilder trace = new StringBuilder();
+
+        BlockPos cur = start == null ? null : start.immutable();
+        int count = 0;
+        boolean capped = false;
+        int maxLoadPath = SIConfig.maxLoadPath();
+
+        while (cur != null) {
+            if (count >= maxLoadPath) {
+                capped = true;
+                break;
+            }
+            // Ground never carried a number, so there is nothing to give back to it.
+            if (!isStructural(level, cur, null) || isAnchor(level, reg, cur)) {
+                break;
+            }
+            if (!visited.add(cur)) {
+                break;
+            }
+
+            int natural = naturalOf(level, cur, level.getBlockState(cur));
+            int was = storedAt(level, reg, cur);
+            int now = was < natural ? was + 1 : was;
+            reg.set(cur, now);
+            count++;
+            if (trace.length() > 0) {
+                trace.append(" -> ");
+            }
+            trace.append(cur.getX()).append(',').append(cur.getY()).append(',')
+                    .append(cur.getZ()).append('=').append(now);
+
+            cur = supportOf(level, reg, cur, visited);
+        }
+        return new Degraded(count, List.of(), capped, trace.toString());
+    }
+
+    /**
      * How many neighbours of {@code pos} are structural and the same block as
      * {@code matchBlock}.
      */

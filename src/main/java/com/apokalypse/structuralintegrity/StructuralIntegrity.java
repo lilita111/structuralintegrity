@@ -39,6 +39,8 @@ public class StructuralIntegrity {
         LOGGER.info("[SI] clumps: a block entering wbireg with clumpBracingThreshold same-type neighbours "
                 + "gets its clump grant once, at init");
         LOGGER.info("[SI] snap: the chain stops at the first spent block; config picks which side of the snap breaks");
+        LOGGER.info("[SI] reverse: destroying a block runs the same chain +1 toward ground, "
+                + "capped at each block's natural (reverseIntegrityOnBreak)");
         LOGGER.info("[SI] falling: a component that cannot reach ground is assembled by sable, up to {} blocks",
                 SIFall.MAX_ASSEMBLY);
         LOGGER.info("[SI] never_anchor blocks get a wbireg row on sight - loose material and growth are never ground");

@@ -13,6 +13,7 @@ import net.neoforged.neoforge.event.level.ExplosionEvent;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -30,11 +31,12 @@ import java.util.Set;
  *         point per block, before the placed block and its neighbours are
  *         evaluated. The whole chain is printed, so what the maths did is
  *         readable from the log without guessing.
- * break : drop the broken row, disturb the neighbours out of ground, then
- *         evaluate them.
- * explode : same drop-and-disturb as break, for every position the explosion
- *         is about to remove - no per-origin evaluation, there is no single
- *         origin.
+ * break : run the chain in reverse first - the destroyed block's load comes
+ *         off, +1 per block from its support toward ground - then drop the
+ *         broken row, disturb the neighbours out of ground, and evaluate them.
+ * explode : same reverse-then-drop-and-disturb as break, for every position
+ *         the explosion is about to remove - no per-origin evaluation, there
+ *         is no single origin.
  *
  * For every HANG face found, the neighbour across that face is the break
  * candidate and is run through the function in turn. One step, never a cascade -
@@ -74,10 +76,24 @@ public final class SIEvents {
         }
         WbiReg reg = WbiReg.of(level);
         BlockPos pos = event.getPos();
+        // The load this block was adding disappears with it: the same chain the
+        // placement charged runs again from its support, +1 per block this time.
+        // Before disturb, so the walk still sees ground as ground.
+        Integrity.Degraded restored = null;
+        if (SIConfig.reverseIntegrityOnBreak() && Integrity.isStructural(level, pos, null)) {
+            BlockPos support = Integrity.supportOf(level, reg, pos, null);
+            if (support != null) {
+                restored = Integrity.restore(level, reg, support, Set.of(pos.immutable()));
+            }
+        }
         // BreakEvent fires before removal: solve the world as it will be.
         reg.clear(pos);
         List<BlockPos> disturbed = Integrity.disturb(level, reg, pos, pos);
         run(level, reg, "BREAK", pos, pos, null, disturbed, event.getPlayer());
+        if (restored != null && restored.count() > 0) {
+            StructuralIntegrity.LOGGER.info("[SI]   restore chain +1 x{}: {}{}",
+                    restored.count(), restored.trace(), restored.capped() ? " (capped)" : "");
+        }
 
         // Stage 2. Deliberately not solved here: this fires while the broken block
         // is still in the world, so the component that matters does not exist yet.
@@ -103,14 +119,32 @@ public final class SIEvents {
             return;
         }
         WbiReg reg = WbiReg.of(level);
+        Set<BlockPos> gone = new HashSet<>(affected.size());
         for (BlockPos pos : affected) {
-            BlockPos p = pos.immutable();
+            gone.add(pos.immutable());
+        }
+        // Reverse the chains before anything is cleared, with the whole blast
+        // excluded from the walks - a +1 must not land on a block that is about
+        // to be removed anyway, it belongs to the survivors past it.
+        int restored = 0;
+        if (SIConfig.reverseIntegrityOnBreak()) {
+            for (BlockPos p : gone) {
+                if (!Integrity.isStructural(level, p, null)) {
+                    continue;
+                }
+                BlockPos support = Integrity.supportOf(level, reg, p, gone);
+                if (support != null) {
+                    restored += Integrity.restore(level, reg, support, gone).count();
+                }
+            }
+        }
+        for (BlockPos p : gone) {
             reg.clear(p);
             Integrity.disturb(level, reg, p, p);
             SIFall.seedAround(level, p, false);
         }
-        StructuralIntegrity.LOGGER.info("[SI] EXPLOSION {} blocks -> disturbed and seeded for fall-check",
-                affected.size());
+        StructuralIntegrity.LOGGER.info("[SI] EXPLOSION {} blocks -> restored +1 across {} chain blocks, disturbed and seeded for fall-check",
+                affected.size(), restored);
     }
 
     private static void run(ServerLevel level, WbiReg reg, String trigger, BlockPos origin,
