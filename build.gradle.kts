@@ -28,6 +28,7 @@ dependencies {
     compileOnly(files("libs/sable-companion-common-1.21.1-1.6.0.jar"))
     runtimeOnly(files("libs/sable-neoforge-1.21.1-2.0.5.jar"))
     runtimeOnly(files("libs/sablecollisiondamage-1.0.8.jar"))
+    runtimeOnly(files("libs/sableexplosionfix-1.0.0.jar"))
 }
 
 neoForge {

@@ -211,7 +211,14 @@ public final class SIFall {
                 // never an entry write.
                 if (level.getBlockState(n).getBlock() == broken && !reg.isAnchor(n)
                         && !shielded.contains(n)) {
-                    int now = Math.max(failAt, reg.get(n) - 1);
+                    // With breakStrongerBlock=false only the snapped weaker block may
+                    // break: splinter wear weakens neighbours but can never finish
+                    // them, so the floor is one above failAt and no cascade starts.
+                    int floor = SIConfig.breakStrongerBlock() ? failAt : failAt + 1;
+                    // A row already at or under the floor is left alone - the clamp
+                    // must never raise a spent row back above failAt.
+                    int stored = reg.get(n);
+                    int now = Math.max(Math.min(stored, floor), stored - 1);
                     reg.set(n, now);
                     if (now <= failAt) {
                         StructuralIntegrity.LOGGER.info("[SI] SPLINTER {} spent by {} breaking",

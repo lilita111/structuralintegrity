@@ -49,6 +49,16 @@ versionRange = "[1.0,)"
 ordering = "AFTER"
 side = "BOTH"
 
+# Sable's own explosion handling looks blocks up in plot space, above the world
+# height limit, where every lookup reads void-air - sub-levels never take blast
+# damage without this patch mod.
+[[dependencies.structuralintegrity]]
+modId = "sableexplosionfix"
+type = "required"
+versionRange = "[1.0,)"
+ordering = "AFTER"
+side = "BOTH"
+
 # Optional. With Create installed the goggles read out block integrity; without
 # it the mod is unchanged and the mixin is never applied.
 [[dependencies.structuralintegrity]]
