@@ -1,23 +1,22 @@
 {
   "values": {
-    "#minecraft:leaves":         { "integrity": 2,  "never_anchor": true },
-    "#minecraft:logs":           { "integrity": 14, "never_anchor": true },
-    "#minecraft:planks":         { "integrity": 8,  "never_anchor": true },
-    "#minecraft:wooden_slabs":   { "integrity": 4,  "never_anchor": true },
-    "#minecraft:wooden_stairs":  { "integrity": 5,  "never_anchor": true },
+    "#minecraft:logs":           { "integrity": 20, "never_anchor": true },
+    "#minecraft:planks":         { "integrity": 16, "never_anchor": true },
+    "#minecraft:wooden_slabs":   { "integrity": 12, "never_anchor": true },
+    "#minecraft:wooden_stairs":  { "integrity": 14, "never_anchor": true },
     "#minecraft:sand":           { "integrity": 2,  "never_anchor": true },
     "#minecraft:dirt":           { "integrity": 2,  "never_anchor": true },
     "minecraft:gravel":          { "integrity": 2,  "never_anchor": true },
 
     "#minecraft:wool":           { "integrity": 3 },
-    "#minecraft:stone_bricks":   { "integrity": 16 },
+    "#minecraft:stone_bricks":   { "integrity": 40 },
 
     "minecraft:scaffolding":     { "integrity": 7 },
     "minecraft:ladder":          { "integrity": 2 },
     "minecraft:glass":           { "integrity": 3 },
-    "minecraft:cobblestone":     { "integrity": 10 },
-    "minecraft:stone":           { "integrity": 64 },
-    "minecraft:deepslate":       { "integrity": 20 },
+    "minecraft:cobblestone":     { "integrity": 7 },
+    "minecraft:stone":           { "integrity": 32 },
+    "minecraft:deepslate":       { "integrity": 36 },
     "minecraft:obsidian":        { "integrity": 40 },
     "minecraft:iron_block":      { "integrity": 80 },
     "minecraft:netherite_block": { "integrity": 160 }

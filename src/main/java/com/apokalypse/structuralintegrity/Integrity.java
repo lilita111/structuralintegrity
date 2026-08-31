@@ -4,6 +4,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.BushBlock;
+import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
@@ -58,7 +60,7 @@ public final class Integrity {
      */
     public static final int MAX_LOAD_PATH = 1024;
     /** Default for a solid block with no row in naturalintegrityreg. */
-    public static final int DEFAULT_INTEGRITY = 8;
+    public static final int DEFAULT_INTEGRITY = 24;
     /** Default for a block with no collision shape - a torch, a flower, a rail. */
     public static final int DEFAULT_FRAGILE = 1;
     /**
@@ -856,18 +858,24 @@ public final class Integrity {
     }
 
     /**
-     * Air and fluids are the only things outside the system. A torch is not
-     * excluded, it is integrity 1: place a block on one and the torch is at 0 and
-     * the block it was carrying has nowhere to sit. No special-case list.
+     * Air, fluids, plants and leaves are outside the system - not structure,
+     * carrying no load and transmitting none. Plants are anything growing:
+     * {@link BushBlock} covers flowers, saplings, crops, grass and mushrooms, and
+     * {@link LeavesBlock} covers foliage - classes, not lists, so modded blocks
+     * extending them are covered too. A torch is NOT excluded, it is integrity 1:
+     * place a block on one and the torch is at 0 and the block it was carrying
+     * has nowhere to sit. The config's nonStructuralBlocks adds to this.
      */
     public static boolean isStructural(ServerLevel level, BlockPos pos, @Nullable BlockPos ghost) {
         if (ghost != null && ghost.equals(pos)) {
             return false;
         }
         BlockState state = level.getBlockState(pos);
-        if (state.isAir() || state.getBlock() instanceof LiquidBlock) {
+        Block block = state.getBlock();
+        if (state.isAir() || block instanceof LiquidBlock
+                || block instanceof BushBlock || block instanceof LeavesBlock) {
             return false;
         }
-        return !SIConfig.nonStructuralBlocks().contains(state.getBlock());
+        return !SIConfig.nonStructuralBlocks().contains(block);
     }
 }

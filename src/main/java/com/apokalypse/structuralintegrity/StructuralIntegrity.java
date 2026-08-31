@@ -30,6 +30,8 @@ public class StructuralIntegrity {
                 + "reported but no longer charged; ground = no wbireg row (max+1)");
         LOGGER.info("[SI] limits: maxRegion={} defaultIntegrity={}",
                 Integrity.MAX_REGION, Integrity.DEFAULT_INTEGRITY);
+        LOGGER.info("[SI] outside the system: air, fluids, plants (BushBlock) and leaves (LeavesBlock); "
+                + "nonStructuralBlocks adds to that");
         LOGGER.info("[SI] placement rule: touching ground stored = natural; otherwise stored = "
                 + "min(natural, strongest connection); the charge still goes down");
         LOGGER.info("[SI] one chain function: place charges -1, break relaxes +1, an explosion relaxes "

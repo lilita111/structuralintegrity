@@ -29,7 +29,7 @@ public final class SIConfig {
 
     private static final ModConfigSpec.ConfigValue<List<? extends String>> NON_STRUCTURAL_BLOCKS = B
             .comment("Blocks the integrity system ignores completely, as if they were air.",
-                    "Air and fluids are always ignored; this list adds to that.")
+                    "Air, fluids, plants and leaves are always ignored; this list adds to that.")
             .defineListAllowEmpty("nonStructuralBlocks", List.of(), () -> "", SIConfig::isBlockId);
 
     // ---- anchors ----------------------------------------------------------
