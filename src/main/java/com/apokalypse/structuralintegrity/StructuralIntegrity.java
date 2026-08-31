@@ -30,7 +30,8 @@ public class StructuralIntegrity {
                 + "reported but no longer charged; ground = no wbireg row (max+1)");
         LOGGER.info("[SI] limits: maxRegion={} defaultIntegrity={}",
                 Integrity.MAX_REGION, Integrity.DEFAULT_INTEGRITY);
-        LOGGER.info("[SI] placement rule: on ground stored = natural; otherwise stored = min(natural, support)");
+        LOGGER.info("[SI] placement rule: touching ground stored = natural; otherwise stored = "
+                + "min(natural, strongest connection); the charge still goes down");
         LOGGER.info("[SI] load descends the support chain from the support to ground, -1 per block, "
                 + "at most {} deep; it stops at ground and at the first block to reach {}",
                 Integrity.MAX_LOAD_PATH, Integrity.FAIL_AT);

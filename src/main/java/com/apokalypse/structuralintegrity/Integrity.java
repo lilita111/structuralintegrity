@@ -338,8 +338,8 @@ public final class Integrity {
      * Assign the placed block its integrity from the block it was built on.
      *
      * <pre>
-     *   on ground   assigned = natural           and nothing is charged
-     *   otherwise   assigned = stored(support)   and degrade(support) charges -1
+     *   touching ground   assigned = natural                        nothing charged
+     *   otherwise         assigned = min(natural, best connection)  degrade(support) charges -1
      * </pre>
      *
      * The new block does not arrive weaker than what it stands on - it arrives equal
@@ -368,7 +368,6 @@ public final class Integrity {
         int natural = naturalOf(level, pos, level.getBlockState(pos));
 
         BlockPos support = supportOf(level, reg, pos, null);
-        int best = support == null ? Integer.MIN_VALUE : storedAt(level, reg, support);
 
         if (support == null) {
             // Placed touching nothing structural. It supports itself and no more.
@@ -376,15 +375,37 @@ public final class Integrity {
             return new Placed(pos.immutable(), natural, 0, null, 0, false, List.of(), 0, false, "");
         }
 
-        if (best == WbiReg.ANCHOR) {
-            // Founded on rock. Full strength, and the ground is charged nothing.
+        // The value comes from the strongest connection, not blindly from below -
+        // the block underneath may be the weakest thing touching us, and a block
+        // held by a strong wall is as sound as that wall. Only the CHARGE follows
+        // gravity; where strength is inherited from is a separate question.
+        boolean founded = false;
+        int best = Integer.MIN_VALUE;
+        for (Direction dir : DIRS) {
+            BlockPos n = pos.relative(dir).immutable();
+            if (!isStructural(level, n, null)) {
+                continue;
+            }
+            int at = storedAt(level, reg, n);
+            if (at == WbiReg.ANCHOR) {
+                founded = true;
+                break;
+            }
+            if (at > best) {
+                best = at;
+            }
+        }
+
+        if (founded) {
+            // Touching ground anywhere. Full strength, and nothing is charged -
+            // rock takes the load and passes none on.
             int assigned = initialValue(level, pos, natural);
             reg.set(pos, assigned);
             return new Placed(pos.immutable(), natural, assigned,
-                    support.immutable(), best, true, List.of(), 0, false, "");
+                    support.immutable(), WbiReg.ANCHOR, true, List.of(), 0, false, "");
         }
 
-        // Inherit the footing, then charge the structure that provides it.
+        // Inherit the best footing, then charge the structure the load rests on.
         int assigned = initialValue(level, pos, Math.min(natural, best));
         reg.set(pos, assigned);
         Degraded d = degrade(level, reg, support, pos);
