@@ -151,20 +151,19 @@ public final class SIEvents {
     }
 
     /**
-     * The one break criterion: effective integrity (stored minus the worst hanging
-     * face - the exact number the tooltip shows) at or below zero breaks the
+     * The one break criterion: the wbireg row itself at or below zero breaks the
      * block, through the same next-tick destroy pipeline as any spent block
      * (splinter, breakStrongerBlock and breakOnIntegrityLoss all apply), and the
-     * fall pass then detaches whatever it was holding. Called from every
-     * place/break evaluation, and from the goggle query when
-     * inspectionEnforcesIntegrity is on - a bearer deep in standing terrain is
-     * never within a step of an event, so the query is the only computation that
-     * ever sees its true number.
+     * fall pass then detaches whatever it was holding. The hang-adjusted tooltip
+     * number is display only - the real accounting already happened when each
+     * hanging block's placement chain charged this row. What this closes is the
+     * spent-standing wart: a row worn to exactly zero used to keep standing until
+     * a later chain happened to re-snap it.
      */
     public static void enforce(ServerLevel level, Integrity.Result r) {
-        if (r.structural() && !r.anchor() && r.integrityMax() <= 0) {
-            StructuralIntegrity.LOGGER.info("[SI] OVERLOADED {} stored={} hang={} -> fails",
-                    fmt(r.pos()), r.stored(), r.hangMax());
+        if (r.structural() && !r.anchor() && r.stored() <= 0) {
+            StructuralIntegrity.LOGGER.info("[SI] SPENT ROW {} stored={} -> fails",
+                    fmt(r.pos()), r.stored());
             SIFall.queueDestroy(level, r.pos());
         }
     }

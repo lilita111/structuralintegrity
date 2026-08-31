@@ -89,14 +89,6 @@ public final class SIConfig {
                     "sub-level around it. No block is lost and no splintering happens.")
             .define("breakOnIntegrityLoss", true);
 
-    private static final ModConfigSpec.BooleanValue INSPECTION_ENFORCES_INTEGRITY = B
-            .comment("true: a goggle inspection that computes an effective integrity at or",
-                    "below zero (stored minus worst hanging face) queues the block to break,",
-                    "the same as a place/break evaluation would. Looking at a doomed block",
-                    "condemns it. false: inspections stay read-only and such a block stands",
-                    "until an event next to it re-evaluates it.")
-            .define("inspectionEnforcesIntegrity", true);
-
     private static final ModConfigSpec.BooleanValue REVERSE_INTEGRITY_ON_BREAK = B
             .comment("true: destroying a block runs the chain in reverse - the same walk from",
                     "its support toward ground, +1 per block instead of -1, capped at each",
@@ -253,10 +245,6 @@ public final class SIConfig {
 
     public static boolean breakOnIntegrityLoss() {
         return !SPEC.isLoaded() || BREAK_ON_INTEGRITY_LOSS.get();
-    }
-
-    public static boolean inspectionEnforcesIntegrity() {
-        return !SPEC.isLoaded() || INSPECTION_ENFORCES_INTEGRITY.get();
     }
 
     public static int failAt() {
