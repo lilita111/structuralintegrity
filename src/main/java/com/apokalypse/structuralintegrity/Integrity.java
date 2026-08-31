@@ -557,10 +557,15 @@ public final class Integrity {
             return v;
         }
         BlockState state = level.getBlockState(pos);
-        if (!neverAnchor(state)) {
+        BlockIntegrity row = state.getBlock().builtInRegistryHolder().getData(SIDataMaps.NATURAL);
+        int natural = naturalOf(level, pos, state);
+        // Ground is the permissive default - but nothing with no collision shape can
+        // hold anything up, so it never gets to be ground either way; that is the same
+        // floor naturalOf already gave it below. Listed rows still decide for themselves.
+        boolean neverAnchor = row != null ? row.neverAnchor() : natural == DEFAULT_FRAGILE;
+        if (!neverAnchor) {
             return WbiReg.ANCHOR;
         }
-        int natural = naturalOf(level, pos, state);
         reg.set(pos, natural);
         return natural;
     }
@@ -568,16 +573,6 @@ public final class Integrity {
     /** True when this position is ground: untouched, and allowed to be. */
     public static boolean isAnchor(ServerLevel level, WbiReg reg, BlockPos pos) {
         return storedAt(level, reg, pos) == WbiReg.ANCHOR;
-    }
-
-    /**
-     * naturalintegrityreg lookup, never_anchor column. A block with no row can be
-     * ground - the default is the permissive one, so unlisted modded blocks behave
-     * like stone rather than like sand.
-     */
-    public static boolean neverAnchor(BlockState state) {
-        BlockIntegrity row = state.getBlock().builtInRegistryHolder().getData(SIDataMaps.NATURAL);
-        return row != null && row.neverAnchor();
     }
 
     /**

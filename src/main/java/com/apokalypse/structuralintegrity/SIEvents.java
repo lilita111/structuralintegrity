@@ -9,6 +9,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
+import net.neoforged.neoforge.event.level.ExplosionEvent;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -17,8 +18,12 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Stage 1 trigger points. Only blocks a player updates are run through the
- * function - vanilla neighbour updates, redstone, fluids and pistons are ignored.
+ * Stage 1 trigger points. A player's own place/break is run through the full
+ * evaluate-and-report function below - vanilla neighbour updates, redstone,
+ * fluids and pistons are ignored. Explosions are not a player update and are not
+ * evaluated or reported the same way, but they remove blocks exactly as
+ * mining does, so they get the same disturb-then-seed treatment break does,
+ * batched over every position the blast is about to take.
  *
  * place : the placed block inherits its support's integrity, and the load then
  *         descends the support chain from that support to ground, charging one
@@ -27,6 +32,9 @@ import java.util.Set;
  *         readable from the log without guessing.
  * break : drop the broken row, disturb the neighbours out of ground, then
  *         evaluate them.
+ * explode : same drop-and-disturb as break, for every position the explosion
+ *         is about to remove - no per-origin evaluation, there is no single
+ *         origin.
  *
  * For every HANG face found, the neighbour across that face is the break
  * candidate and is run through the function in turn. One step, never a cascade -
@@ -74,6 +82,35 @@ public final class SIEvents {
         // Stage 2. Deliberately not solved here: this fires while the broken block
         // is still in the world, so the component that matters does not exist yet.
         SIFall.seedAround(level, pos, false);
+    }
+
+    /**
+     * Detonate fires once per explosion with every position it is about to take,
+     * still present in the world - the same "solve it before it's gone" timing
+     * BreakEvent gives a single mined block. Without this, a blast never disturbs
+     * anything: whatever it undercuts either hangs there forever (nothing here ever
+     * queues a fall check for it) or, if it happens to be a vanilla gravity block
+     * like sand or gravel, drops on its own the ordinary way - never as the one
+     * connected sub-level the rest of the wall should come down as.
+     */
+    @SubscribeEvent
+    public static void onExplosion(ExplosionEvent.Detonate event) {
+        if (!(event.getLevel() instanceof ServerLevel level)) {
+            return;
+        }
+        List<BlockPos> affected = event.getAffectedBlocks();
+        if (affected.isEmpty()) {
+            return;
+        }
+        WbiReg reg = WbiReg.of(level);
+        for (BlockPos pos : affected) {
+            BlockPos p = pos.immutable();
+            reg.clear(p);
+            Integrity.disturb(level, reg, p, p);
+            SIFall.seedAround(level, p, false);
+        }
+        StructuralIntegrity.LOGGER.info("[SI] EXPLOSION {} blocks -> disturbed and seeded for fall-check",
+                affected.size());
     }
 
     private static void run(ServerLevel level, WbiReg reg, String trigger, BlockPos origin,
