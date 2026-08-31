@@ -49,16 +49,22 @@ public final class SIConfig {
             .define("gravityFirstChain", true);
 
     private static final ModConfigSpec.IntValue CLUMP_BRACING_THRESHOLD = B
-            .comment("Same-type neighbours (beyond the one the chain arrived from) a block",
-                    "needs to count as a clump, which resets the previous block's integrity.",
-                    "0 disables clump bracing.")
+            .comment("Same-type neighbours a block needs to count as clumped. A clumped",
+                    "block enters tracking with its own natural integrity added on top of",
+                    "its starting value - once, when its wbireg row is created; the chain's",
+                    "-1 then wears the bonus away like anything else. 0 disables this.")
             .defineInRange("clumpBracingThreshold", 4, 0, 5);
 
-    private static final ModConfigSpec.BooleanValue CLUMP_BRACING_USES_CLUMP_TYPE = B
-            .comment("true: a braced block is reset to the CLUMP block type's natural maximum",
-                    "(a beam into a stone mass is held at stone's maximum).",
-                    "false: reset to the braced block's OWN natural maximum.")
-            .define("clumpBracingUsesClumpType", true);
+    private static final ModConfigSpec.BooleanValue BREAK_WEAKER_BLOCK = B
+            .comment("A snap has two sides: the spent block and the block it was holding up.",
+                    "The side with the lower natural integrity is the weaker one - stone on",
+                    "clumped dirt, that is the dirt. true: the weaker side breaks.")
+            .define("breakWeakerBlock", true);
+
+    private static final ModConfigSpec.BooleanValue BREAK_STRONGER_BLOCK = B
+            .comment("true: the stronger side of the snap breaks too. Both true breaks both",
+                    "sides; both false breaks neither - the chain stays spent but standing.")
+            .define("breakStrongerBlock", false);
 
     private static final ModConfigSpec.IntValue MAX_LOAD_PATH = B
             .comment("How many blocks the placement charge may descend before giving up.")
@@ -153,8 +159,12 @@ public final class SIConfig {
         return SPEC.isLoaded() ? CLUMP_BRACING_THRESHOLD.get() : 4;
     }
 
-    public static boolean clumpBracingUsesClumpType() {
-        return !SPEC.isLoaded() || CLUMP_BRACING_USES_CLUMP_TYPE.get();
+    public static boolean breakWeakerBlock() {
+        return !SPEC.isLoaded() || BREAK_WEAKER_BLOCK.get();
+    }
+
+    public static boolean breakStrongerBlock() {
+        return SPEC.isLoaded() && BREAK_STRONGER_BLOCK.get();
     }
 
     public static int maxLoadPath() {

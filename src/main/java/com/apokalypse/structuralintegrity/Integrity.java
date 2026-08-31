@@ -210,7 +210,8 @@ public final class Integrity {
      *
      * @param placed the block that was just set, excluded from the path because it is
      *               the load rather than any part of what carries it
-     * @return the blocks driven to {@link #FAIL_AT}, for the caller to destroy
+     * @return the side(s) of the snap the config chose to break, for the caller to
+     *         destroy - possibly empty even when the chain snapped
      */
     public static Degraded degrade(ServerLevel level, WbiReg reg, BlockPos start,
                                    @Nullable BlockPos placed) {
@@ -222,11 +223,11 @@ public final class Integrity {
         }
 
         BlockPos cur = start == null ? null : start.immutable();
+        BlockPos prev = placed == null ? null : placed.immutable();
         int count = 0;
         boolean capped = false;
         int maxLoadPath = SIConfig.maxLoadPath();
         int failAt = SIConfig.failAt();
-        int clumpThreshold = SIConfig.clumpBracingThreshold();
 
         while (cur != null) {
             if (count >= maxLoadPath) {
@@ -256,54 +257,58 @@ public final class Integrity {
                     .append(cur.getZ()).append('=').append(now);
 
             if (now <= failAt) {
-                failed.add(cur);
-                trace.append("!FAIL");
+                trace.append("!SNAP");
+                snap(level, cur, prev, failed, trace);
                 break;
             }
 
-            BlockPos prev = cur;
+            prev = cur;
             cur = supportOf(level, reg, cur, visited);
-
-            // A junction this heavily braced in its own material - four or more
-            // further same-type neighbours besides the one just arrived from - is a
-            // clump, not a single load path: it spreads the weight across every block
-            // it is packed against rather than taking it down the one path this chain
-            // happened to walk. The block just charged is reset to the natural
-            // maximum of the CLUMP's block type - the clump lends its own strength
-            // to whatever leans on it, so a beam into a stone mass is held at
-            // stone's maximum, not the beam's. Same-type only for the count itself:
-            // the clump has to be a dense mass of one material to lend anything.
-            if (cur != null && clumpThreshold > 0) {
-                Block curBlock = level.getBlockState(cur).getBlock();
-                if (countSameTypeNeighbors(level, cur, curBlock, visited) >= clumpThreshold) {
-                    int max = SIConfig.clumpBracingUsesClumpType()
-                            ? naturalOf(level, cur, level.getBlockState(cur))
-                            : naturalOf(level, prev, level.getBlockState(prev));
-                    reg.set(prev, max);
-                    trace.append(" (braced@").append(cur.getX()).append(',').append(cur.getY())
-                            .append(',').append(cur.getZ()).append(", reset ").append(prev.getX())
-                            .append(',').append(prev.getY()).append(',').append(prev.getZ())
-                            .append(" to ").append(max).append(')');
-                }
-            }
         }
         return new Degraded(count, failed, capped, trace.toString());
     }
 
     /**
-     * How many neighbours of {@code pos} are structural, the same block as
-     * {@code matchBlock}, and not already in {@code exclude} - the chain's visited
-     * set, so the direction just arrived from is not counted as a "further"
-     * connection.
+     * The chain has snapped at {@code spent}. A snap has two sides: the spent
+     * block, and {@code above} - the block it was holding up, which is the placed
+     * block itself when the snap lands on the first step. The side with the lower
+     * natural integrity is the weaker side; config chooses which side gives way -
+     * weaker, stronger, both, or neither.
      */
-    private static int countSameTypeNeighbors(ServerLevel level, BlockPos pos, Block matchBlock,
-                                               Set<BlockPos> exclude) {
+    private static void snap(ServerLevel level, BlockPos spent, @Nullable BlockPos above,
+                             List<BlockPos> failed, StringBuilder trace) {
+        BlockPos weaker = spent;
+        BlockPos stronger = null;
+        if (above != null) {
+            int natSpent = naturalOf(level, spent, level.getBlockState(spent));
+            int natAbove = naturalOf(level, above, level.getBlockState(above));
+            if (natAbove < natSpent) {
+                weaker = above;
+                stronger = spent;
+            } else {
+                stronger = above;
+            }
+        }
+        if (SIConfig.breakWeakerBlock()) {
+            failed.add(weaker);
+            trace.append(" weaker@").append(weaker.getX()).append(',').append(weaker.getY())
+                    .append(',').append(weaker.getZ()).append("!FAIL");
+        }
+        if (SIConfig.breakStrongerBlock() && stronger != null) {
+            failed.add(stronger);
+            trace.append(" stronger@").append(stronger.getX()).append(',').append(stronger.getY())
+                    .append(',').append(stronger.getZ()).append("!FAIL");
+        }
+    }
+
+    /**
+     * How many neighbours of {@code pos} are structural and the same block as
+     * {@code matchBlock}.
+     */
+    private static int countSameTypeNeighbors(ServerLevel level, BlockPos pos, Block matchBlock) {
         int n = 0;
         for (Direction d : DIRS) {
             BlockPos p = pos.relative(d).immutable();
-            if (exclude != null && exclude.contains(p)) {
-                continue;
-            }
             if (!isStructural(level, p, null)) {
                 continue;
             }
@@ -312,6 +317,28 @@ public final class Integrity {
             }
         }
         return n;
+    }
+
+    /**
+     * The value a block enters wbireg with. Clumps stay together: a block sitting
+     * in 4-5 same-type neighbours enters with its own natural integrity added on
+     * top of {@code base}. The bonus is paid here - at row creation - and only
+     * here, so it is paid once; from then on the chain takes its -1 from the block
+     * like from any other, and the bonus wears away instead of renewing.
+     */
+    private static int initialValue(ServerLevel level, BlockPos pos, int base) {
+        int threshold = SIConfig.clumpBracingThreshold();
+        if (threshold <= 0) {
+            return base;
+        }
+        BlockState state = level.getBlockState(pos);
+        if (countSameTypeNeighbors(level, pos, state.getBlock()) < threshold) {
+            return base;
+        }
+        int bonus = naturalOf(level, pos, state);
+        StructuralIntegrity.LOGGER.info("[SI] clump init {},{},{}: {}+{} -> {}",
+                pos.getX(), pos.getY(), pos.getZ(), base, bonus, base + bonus);
+        return base + bonus;
     }
 
     /**
@@ -358,13 +385,14 @@ public final class Integrity {
 
         if (best == WbiReg.ANCHOR) {
             // Founded on rock. Full strength, and the ground is charged nothing.
-            reg.set(pos, natural);
-            return new Placed(pos.immutable(), natural, natural,
+            int assigned = initialValue(level, pos, natural);
+            reg.set(pos, assigned);
+            return new Placed(pos.immutable(), natural, assigned,
                     support.immutable(), best, true, List.of(), 0, false, "");
         }
 
         // Inherit the footing, then charge the structure that provides it.
-        int assigned = Math.min(natural, best);
+        int assigned = initialValue(level, pos, Math.min(natural, best));
         reg.set(pos, assigned);
         Degraded d = degrade(level, reg, support, pos);
         return new Placed(pos.immutable(), natural, assigned,
@@ -391,7 +419,7 @@ public final class Integrity {
             if (!isStructural(level, n, ghost) || !isAnchor(level, reg, n)) {
                 continue;
             }
-            reg.set(n, naturalOf(level, n, level.getBlockState(n)));
+            reg.set(n, initialValue(level, n, naturalOf(level, n, level.getBlockState(n))));
             out.add(n.immutable());
         }
         return out;
@@ -696,8 +724,9 @@ public final class Integrity {
         if (!neverAnchor) {
             return WbiReg.ANCHOR;
         }
-        reg.set(pos, natural);
-        return natural;
+        int init = initialValue(level, pos, natural);
+        reg.set(pos, init);
+        return init;
     }
 
     /** True when this position is ground: untouched, and allowed to be. */
