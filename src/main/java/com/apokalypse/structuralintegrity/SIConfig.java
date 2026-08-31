@@ -87,6 +87,13 @@ public final class SIConfig {
                     "0 disables it.")
             .defineInRange("explosionShockwaveDelta", 8, 0, 64);
 
+    private static final ModConfigSpec.BooleanValue MATERIAL_BOUNDARY_STOPS = B
+            .comment("true: the chain crossing into a sturdier material - the next block's",
+                    "natural integrity higher than the previous block's - applies its delta",
+                    "once to that first block and stops there, absorbed. Lower or equal",
+                    "calibre lets the propagation pass. Charge and relax walk the same way.")
+            .define("materialBoundaryStops", true);
+
     private static final ModConfigSpec.IntValue MAX_LOAD_PATH = B
             .comment("How many blocks the placement charge may descend before giving up.")
             .defineInRange("maxLoadPath", Integrity.MAX_LOAD_PATH, 1, 4096);
@@ -198,6 +205,10 @@ public final class SIConfig {
 
     public static int explosionShockwaveDelta() {
         return SPEC.isLoaded() ? EXPLOSION_SHOCKWAVE_DELTA.get() : 0;
+    }
+
+    public static boolean materialBoundaryStops() {
+        return !SPEC.isLoaded() || MATERIAL_BOUNDARY_STOPS.get();
     }
 
     public static int maxLoadPath() {

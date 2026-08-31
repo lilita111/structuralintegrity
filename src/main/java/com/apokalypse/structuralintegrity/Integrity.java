@@ -205,6 +205,14 @@ public final class Integrity {
      * placement above it, so it is charged once per block, while the tip is charged
      * once in its life.
      *
+     * Material matters at the crossings. Within one nireg calibre the delta just
+     * travels; the step where it would pass INTO a sturdier material - the next
+     * block's natural integrity above the previous block's - applies the delta
+     * once to that first block and stops there, absorbed. Into a lower or equal
+     * calibre it passes unchanged. Both signs walk the same way, so what a
+     * placement charged up to a boundary is exactly what the matching break
+     * relaxes back. Gated by {@code materialBoundaryStops}.
+     *
      * This is a chain and not a flood, and the difference is the whole behaviour. A
      * flood charges every block connected to the support, which means a placement on
      * a beach charges the beach; and because a flood has to pick a visit order, which
@@ -249,6 +257,13 @@ public final class Integrity {
         boolean capped = false;
         int maxLoadPath = SIConfig.maxLoadPath();
         int failAt = SIConfig.failAt();
+        boolean boundaryStops = SIConfig.materialBoundaryStops();
+        // The material the delta arrives FROM - the placed or removed block itself
+        // on the first step. Every caller runs before removal (BreakEvent and
+        // Detonate fire with the blocks still present), so its nireg is readable;
+        // a null origin starts the walk with no boundary to cross.
+        int prevNatural = origin != null && isStructural(level, origin, null)
+                ? naturalOf(level, origin, level.getBlockState(origin)) : 0;
 
         while (cur != null) {
             if (count >= maxLoadPath) {
@@ -265,6 +280,9 @@ public final class Integrity {
                 break;
             }
 
+            int natural = naturalOf(level, cur, level.getBlockState(cur));
+            boolean boundary = boundaryStops && prevNatural > 0 && natural > prevNatural;
+
             int stored = storedAt(level, reg, cur);
             int now;
             if (delta < 0) {
@@ -273,8 +291,7 @@ public final class Integrity {
                 // makes the report harder to read.
                 now = Math.max(failAt, stored + delta);
             } else {
-                now = Math.min(stored + delta,
-                        Math.max(stored, naturalOf(level, cur, level.getBlockState(cur))));
+                now = Math.min(stored + delta, Math.max(stored, natural));
             }
             if (now != stored) {
                 reg.set(cur, now);
@@ -291,7 +308,14 @@ public final class Integrity {
                 snap(cur, prev, failed, trace);
                 break;
             }
+            if (boundary) {
+                // Sturdier material: this first block took the delta, nothing
+                // travels past it.
+                trace.append("!BOUNDARY");
+                break;
+            }
 
+            prevNatural = natural;
             prev = cur;
             cur = supportOf(level, reg, cur, visited);
         }

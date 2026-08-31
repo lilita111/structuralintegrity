@@ -35,6 +35,8 @@ public class StructuralIntegrity {
         LOGGER.info("[SI] one chain function: place charges -1, break relaxes +1, an explosion relaxes "
                 + "by explosionShockwaveDelta; at most {} deep, charging floors at {} and can snap, "
                 + "relaxing caps at natural", Integrity.MAX_LOAD_PATH, Integrity.FAIL_AT);
+        LOGGER.info("[SI] material boundary: the chain entering a higher-nireg material applies its delta "
+                + "once to the first block and stops; lower or equal calibre passes it on");
         LOGGER.info("[SI] support = gravity first: DOWN, then sideways, then UP; one rule for placement and for load");
         LOGGER.info("[SI] clumps: a block entering wbireg with clumpBracingThreshold same-type neighbours "
                 + "gets its clump grant once, at init");
