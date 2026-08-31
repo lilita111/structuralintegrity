@@ -298,11 +298,17 @@ public final class SIFall {
     /** Below this speed (in each of linear/angular, squared) a sub-level counts as at rest. */
     private static final double MOVING_THRESHOLD_SQ = 1.0e-4;
 
-    /** How far a transformed anchor may sit from a block center and still count as "in place". */
-    private static final double POSITION_EPSILON = 0.02;
+    /**
+     * How far a transformed anchor may sit from a block center and still count as
+     * "in place". Loosened from 0.02: a body sable reports at rest can still be
+     * fractionally off grid center from float drift in the physics solve, which was
+     * enough to permanently miss the old tolerance and leave a landed sub-level
+     * never reverting to blocks.
+     */
+    private static final double POSITION_EPSILON = 0.2;
 
     /** How far a rotated unit axis may miss its target and still count as grid-aligned. */
-    private static final double ORIENTATION_EPSILON = 0.02;
+    private static final double ORIENTATION_EPSILON = 0.2;
 
     /**
      * Block-state rotation matching each of {@link SubLevelAssemblyHelper.AssemblyTransform}'s
