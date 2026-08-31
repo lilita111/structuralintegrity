@@ -78,7 +78,7 @@ public final class Integrity {
      *
      * @param support   the neighbour the block was built on, or null if it had none
      * @param supportAt that neighbour's integrity before the placement charged it
-     * @param failed    every block the degrade pass drove to {@link #FAIL_AT}
+     * @param failed    every block the charge pass drove to {@link #FAIL_AT}
      * @param degraded  how many blocks the pass reduced, failed ones included
      */
     public record Placed(
@@ -89,17 +89,17 @@ public final class Integrity {
     ) {}
 
     /**
-     * What one {@link #degrade} pass did.
+     * What one {@link #chain} pass did.
      *
      * @param trace the path it walked, {@code x,y,z=value} per step, for the log
      */
-    public record Degraded(int count, List<BlockPos> failed, boolean capped, String trace) {}
+    public record Chained(int count, List<BlockPos> failed, boolean capped, String trace) {}
 
     /**
      * What holds a block up: the neighbour with the most left in it.
      *
      * The single definition of support in the mod. {@link #place} asks it what the
-     * new block inherits from, {@link #degrade} asks it where the load goes next, and
+     * new block inherits from, {@link #chain} asks it where the load goes next, and
      * because both ask the same question the answer cannot disagree between them.
      *
      * Gravity decides, not strength. One structural neighbour is support with
@@ -181,16 +181,26 @@ public final class Integrity {
     }
 
     /**
-     * Charge a placement to the structure carrying it.
+     * The one integrity function: applies {@code delta} to every block of the
+     * support chain. Placing charges the chain with -1; breaking runs the same
+     * walk with +1, because a removed load lets the chain relax; an explosion
+     * relaxes it by its shockwave delta instead.
      *
-     * The load descends. From {@code start} the pass takes one point, then asks
-     * {@link #supportOf} what holds THAT up and repeats, so the charge travels the
-     * chain the weight actually travels: block, its footing, that footing's footing,
-     * down to ground. Ground ends it - rock takes the load and passes none on - and
-     * so does a block driven to {@link #FAIL_AT}, which is not carrying anything any
-     * more and therefore has nothing to hand down.
+     * The walk is the same either way. From {@code start} the pass applies the
+     * delta, then asks {@link #supportOf} what holds THAT up and repeats, so it
+     * travels the chain the weight actually travels: block, its footing, that
+     * footing's footing, down to ground. Ground ends it - rock takes the load and
+     * passes none on - and so does a block driven to {@link #FAIL_AT}, which is
+     * not carrying anything any more and therefore has nothing to hand down.
      *
-     * There is no falloff along the chain: every block in it pays the same one point.
+     * The sign picks the clamp. Charging (delta &lt; 0) floors at failAt - a
+     * block cannot be worse than spent - and the first block driven there snaps
+     * the chain. Relaxing (delta &gt; 0) caps at each block's own natural
+     * integrity - it never heals past what it is - and a value already above
+     * natural (a clump grant) is left where it stands, not cut down. Nothing can
+     * fail from gaining, so a positive walk never snaps.
+     *
+     * There is no falloff along the chain: every block in it pays the same delta.
      * That is what makes the base of a pillar fail first - it is on the path of every
      * placement above it, so it is charged once per block, while the tip is charged
      * once in its life.
@@ -208,22 +218,33 @@ public final class Integrity {
      * Iterative, not literally recursive - {@link #MAX_LOAD_PATH} deep would overflow
      * the stack. The cap is reported, never silent.
      *
-     * @param placed the block that was just set, excluded from the path because it is
-     *               the load rather than any part of what carries it
+     * @param origin   the block whose place or break caused the walk, excluded from
+     *                 the path because it is the load rather than any part of what
+     *                 carries it; also the held-up side when the chain snaps on the
+     *                 first step
+     * @param excluded further positions the walk must not enter, or null - an
+     *                 explosion passes every position the blast is about to take,
+     *                 so the shockwave lands on survivors only
      * @return the side(s) of the snap the config chose to break, for the caller to
      *         destroy - possibly empty even when the chain snapped
      */
-    public static Degraded degrade(ServerLevel level, WbiReg reg, BlockPos start,
-                                   @Nullable BlockPos placed) {
+    public static Chained chain(ServerLevel level, WbiReg reg, BlockPos start,
+                                @Nullable BlockPos origin, @Nullable Set<BlockPos> excluded,
+                                int delta) {
         List<BlockPos> failed = new ArrayList<>();
         Set<BlockPos> visited = new HashSet<>();
         StringBuilder trace = new StringBuilder();
-        if (placed != null) {
-            visited.add(placed.immutable());
+        if (origin != null) {
+            visited.add(origin.immutable());
+        }
+        if (excluded != null) {
+            for (BlockPos p : excluded) {
+                visited.add(p.immutable());
+            }
         }
 
         BlockPos cur = start == null ? null : start.immutable();
-        BlockPos prev = placed == null ? null : placed.immutable();
+        BlockPos prev = origin == null ? null : origin.immutable();
         int count = 0;
         boolean capped = false;
         int maxLoadPath = SIConfig.maxLoadPath();
@@ -244,11 +265,20 @@ public final class Integrity {
                 break;
             }
 
-            // A block cannot be worse than spent. Below FAIL_AT the number is
-            // meaningless - it is already queued for destruction - and it only makes
-            // the report harder to read.
-            int now = Math.max(failAt, storedAt(level, reg, cur) - 1);
-            reg.set(cur, now);
+            int stored = storedAt(level, reg, cur);
+            int now;
+            if (delta < 0) {
+                // A block cannot be worse than spent. Below FAIL_AT the number is
+                // meaningless - it is already queued for destruction - and it only
+                // makes the report harder to read.
+                now = Math.max(failAt, stored + delta);
+            } else {
+                now = Math.min(stored + delta,
+                        Math.max(stored, naturalOf(level, cur, level.getBlockState(cur))));
+            }
+            if (now != stored) {
+                reg.set(cur, now);
+            }
             count++;
             if (trace.length() > 0) {
                 trace.append(" -> ");
@@ -256,7 +286,7 @@ public final class Integrity {
             trace.append(cur.getX()).append(',').append(cur.getY()).append(',')
                     .append(cur.getZ()).append('=').append(now);
 
-            if (now <= failAt) {
+            if (delta < 0 && now <= failAt) {
                 trace.append("!SNAP");
                 snap(cur, prev, failed, trace);
                 break;
@@ -265,7 +295,7 @@ public final class Integrity {
             prev = cur;
             cur = supportOf(level, reg, cur, visited);
         }
-        return new Degraded(count, failed, capped, trace.toString());
+        return new Chained(count, failed, capped, trace.toString());
     }
 
     /**
@@ -290,65 +320,6 @@ public final class Integrity {
             trace.append(" stronger@").append(stronger.getX()).append(',').append(stronger.getY())
                     .append(',').append(stronger.getZ()).append("!FAIL");
         }
-    }
-
-    /**
-     * The reverse of {@link #degrade}: destroying a block takes its load off the
-     * chain that carried it, so the same walk runs from the destroyed block's
-     * support toward ground, and each block gains one point back instead of
-     * losing one. The gain is capped at the block's own natural integrity - it
-     * never heals past what it is - and a value already above natural (a clump
-     * grant) is left where it stands, not cut down. Nothing can fail from
-     * gaining, so this walk has no snap.
-     *
-     * Same skeleton as {@link #degrade} on purpose: same support rule, same
-     * ground / loop / depth stops. The only asymmetry is the sign.
-     *
-     * @param removed the block(s) being destroyed, excluded from the path the
-     *                way {@link #degrade} excludes the placed block
-     */
-    public static Degraded restore(ServerLevel level, WbiReg reg, BlockPos start,
-                                   @Nullable Set<BlockPos> removed) {
-        Set<BlockPos> visited = new HashSet<>();
-        if (removed != null) {
-            for (BlockPos r : removed) {
-                visited.add(r.immutable());
-            }
-        }
-        StringBuilder trace = new StringBuilder();
-
-        BlockPos cur = start == null ? null : start.immutable();
-        int count = 0;
-        boolean capped = false;
-        int maxLoadPath = SIConfig.maxLoadPath();
-
-        while (cur != null) {
-            if (count >= maxLoadPath) {
-                capped = true;
-                break;
-            }
-            // Ground never carried a number, so there is nothing to give back to it.
-            if (!isStructural(level, cur, null) || isAnchor(level, reg, cur)) {
-                break;
-            }
-            if (!visited.add(cur)) {
-                break;
-            }
-
-            int natural = naturalOf(level, cur, level.getBlockState(cur));
-            int was = storedAt(level, reg, cur);
-            int now = was < natural ? was + 1 : was;
-            reg.set(cur, now);
-            count++;
-            if (trace.length() > 0) {
-                trace.append(" -> ");
-            }
-            trace.append(cur.getX()).append(',').append(cur.getY()).append(',')
-                    .append(cur.getZ()).append('=').append(now);
-
-            cur = supportOf(level, reg, cur, visited);
-        }
-        return new Degraded(count, List.of(), capped, trace.toString());
     }
 
     /**
@@ -398,12 +369,12 @@ public final class Integrity {
      *
      * <pre>
      *   touching ground   assigned = natural                        nothing charged
-     *   otherwise         assigned = min(natural, best connection)  degrade(support) charges -1
+     *   otherwise         assigned = min(natural, best connection)  chain(support, -1) charges
      * </pre>
      *
      * The new block does not arrive weaker than what it stands on - it arrives equal
      * to it, capped at its own natural, because a block is only ever as sound as its
-     * footing. What the placement costs is paid underneath, by {@link #degrade}.
+     * footing. What the placement costs is paid underneath, by {@link #chain}.
      *
      * This is the reverse of the obvious reading, and it is the physical one: weight
      * travels down. The block at the bottom of a pillar is charged once for every
@@ -467,7 +438,7 @@ public final class Integrity {
         // Inherit the best footing, then charge the structure the load rests on.
         int assigned = initialValue(level, pos, Math.min(natural, best));
         reg.set(pos, assigned);
-        Degraded d = degrade(level, reg, support, pos);
+        Chained d = chain(level, reg, support, pos, null, -1);
         return new Placed(pos.immutable(), natural, assigned,
                 support.immutable(), best, false, d.failed(), d.count(), d.capped(), d.trace());
     }
@@ -525,7 +496,7 @@ public final class Integrity {
          *
          * Once the placement cost moved into the stored value this became the whole
          * of it. The hang terms below used to be subtracted here as well, which
-         * charged every placement twice: {@link #degrade} took a point off the
+         * charged every placement twice: {@link #chain} took a point off the
          * support permanently, and then this took another off for the same weight
          * still sitting on it. A pillar therefore failed at half the height its
          * material said it should.

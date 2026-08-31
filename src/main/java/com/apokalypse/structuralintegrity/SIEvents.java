@@ -35,8 +35,9 @@ import java.util.Set;
  *         off, +1 per block from its support toward ground - then drop the
  *         broken row, disturb the neighbours out of ground, and evaluate them.
  * explode : same reverse-then-drop-and-disturb as break, for every position
- *         the explosion is about to remove - no per-origin evaluation, there
- *         is no single origin.
+ *         the explosion is about to remove, but the chains relax by the
+ *         shockwave delta instead of +1 - no per-origin evaluation, there is
+ *         no single origin.
  *
  * For every HANG face found, the neighbour across that face is the break
  * candidate and is run through the function in turn. One step, never a cascade -
@@ -58,7 +59,7 @@ public final class SIEvents {
         run(level, reg, "PLACE", event.getPos(), null, placed, List.of(),
                 placer instanceof Player p ? p : null);
 
-        // The degrade pass can drive several blocks to zero at once, anywhere in the
+        // The charge pass can drive several blocks to zero at once, anywhere in the
         // structure. They are removed next tick, and whatever they were holding is
         // then floating - which the fall pass picks up on its own.
         if (placed != null) {
@@ -79,11 +80,11 @@ public final class SIEvents {
         // The load this block was adding disappears with it: the same chain the
         // placement charged runs again from its support, +1 per block this time.
         // Before disturb, so the walk still sees ground as ground.
-        Integrity.Degraded restored = null;
+        Integrity.Chained restored = null;
         if (SIConfig.reverseIntegrityOnBreak() && Integrity.isStructural(level, pos, null)) {
             BlockPos support = Integrity.supportOf(level, reg, pos, null);
             if (support != null) {
-                restored = Integrity.restore(level, reg, support, Set.of(pos.immutable()));
+                restored = Integrity.chain(level, reg, support, pos, null, +1);
             }
         }
         // BreakEvent fires before removal: solve the world as it will be.
@@ -123,18 +124,20 @@ public final class SIEvents {
         for (BlockPos pos : affected) {
             gone.add(pos.immutable());
         }
-        // Reverse the chains before anything is cleared, with the whole blast
-        // excluded from the walks - a +1 must not land on a block that is about
-        // to be removed anyway, it belongs to the survivors past it.
+        // The shockwave: every removed block's chain relaxes by the configured
+        // delta before anything is cleared, with the whole blast excluded from
+        // the walks - the points belong to the survivors past the blast, not to
+        // blocks about to be removed anyway.
+        int shock = SIConfig.explosionShockwaveDelta();
         int restored = 0;
-        if (SIConfig.reverseIntegrityOnBreak()) {
+        if (shock > 0) {
             for (BlockPos p : gone) {
                 if (!Integrity.isStructural(level, p, null)) {
                     continue;
                 }
                 BlockPos support = Integrity.supportOf(level, reg, p, gone);
                 if (support != null) {
-                    restored += Integrity.restore(level, reg, support, gone).count();
+                    restored += Integrity.chain(level, reg, support, p, gone, shock).count();
                 }
             }
         }
@@ -143,8 +146,8 @@ public final class SIEvents {
             Integrity.disturb(level, reg, p, p);
             SIFall.seedAround(level, p, false);
         }
-        StructuralIntegrity.LOGGER.info("[SI] EXPLOSION {} blocks -> restored +1 across {} chain blocks, disturbed and seeded for fall-check",
-                affected.size(), restored);
+        StructuralIntegrity.LOGGER.info("[SI] EXPLOSION {} blocks -> shockwave +{} across {} chain blocks, disturbed and seeded for fall-check",
+                affected.size(), shock, restored);
     }
 
     private static void run(ServerLevel level, WbiReg reg, String trigger, BlockPos origin,

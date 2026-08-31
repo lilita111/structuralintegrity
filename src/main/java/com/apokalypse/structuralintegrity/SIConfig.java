@@ -40,7 +40,7 @@ public final class SIConfig {
                     "already; this list is for forcing it on loose material like sand.")
             .defineListAllowEmpty("defaultAnchorBlocks", List.of(), () -> "", SIConfig::isBlockId);
 
-    // ---- the degrade chain ------------------------------------------------
+    // ---- the integrity chain ----------------------------------------------
 
     private static final ModConfigSpec.BooleanValue GRAVITY_FIRST_CHAIN = B
             .comment("true: the -1 chain follows gravity - DOWN first, then a random sideways",
@@ -79,6 +79,13 @@ public final class SIConfig {
                     "block's own natural integrity. Values above natural (clump grants) are",
                     "left alone, never cut down.")
             .define("reverseIntegrityOnBreak", true);
+
+    private static final ModConfigSpec.IntValue EXPLOSION_SHOCKWAVE_DELTA = B
+            .comment("How much integrity an explosion gives back along each removed block's",
+                    "chain - the shockwave. A mined block always relaxes its chain by +1;",
+                    "TNT hits harder. Still capped at each block's own natural integrity.",
+                    "0 disables it.")
+            .defineInRange("explosionShockwaveDelta", 8, 0, 64);
 
     private static final ModConfigSpec.IntValue MAX_LOAD_PATH = B
             .comment("How many blocks the placement charge may descend before giving up.")
@@ -187,6 +194,10 @@ public final class SIConfig {
 
     public static boolean reverseIntegrityOnBreak() {
         return SPEC.isLoaded() && REVERSE_INTEGRITY_ON_BREAK.get();
+    }
+
+    public static int explosionShockwaveDelta() {
+        return SPEC.isLoaded() ? EXPLOSION_SHOCKWAVE_DELTA.get() : 0;
     }
 
     public static int maxLoadPath() {
