@@ -235,15 +235,15 @@ public final class Integrity {
             // further same-type neighbours besides the one just arrived from - is a
             // clump, not a single load path: it spreads the weight across every block
             // it is packed against rather than taking it down the one path this chain
-            // happened to walk, so the point just spent getting here is refunded in
-            // full. Same-type only, so a beam of a different material resting against
-            // a wall of stone does not get to borrow the wall's mass; it has to be
-            // more of itself to count as braced. This is what makes a dense clump of
-            // one material meaningfully harder to bring down than a thin run of it.
+            // happened to walk. The block just charged is reset to the natural
+            // maximum of the CLUMP's block type - the clump lends its own strength
+            // to whatever leans on it, so a beam into a stone mass is held at
+            // stone's maximum, not the beam's. Same-type only for the count itself:
+            // the clump has to be a dense mass of one material to lend anything.
             if (cur != null) {
                 Block curBlock = level.getBlockState(cur).getBlock();
                 if (countSameTypeNeighbors(level, cur, curBlock, visited) >= 4) {
-                    int max = naturalOf(level, prev, level.getBlockState(prev));
+                    int max = naturalOf(level, cur, level.getBlockState(cur));
                     reg.set(prev, max);
                     trace.append(" (braced@").append(cur.getX()).append(',').append(cur.getY())
                             .append(',').append(cur.getZ()).append(", reset ").append(prev.getX())
