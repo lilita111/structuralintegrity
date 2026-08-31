@@ -88,10 +88,12 @@ public final class SIConfig {
             .defineInRange("explosionShockwaveDelta", 8, 0, 64);
 
     private static final ModConfigSpec.BooleanValue MATERIAL_BOUNDARY_STOPS = B
-            .comment("true: the chain crossing into a sturdier material - the next block's",
-                    "natural integrity higher than the previous block's - applies its delta",
-                    "once to that first block and stops there, absorbed. Lower or equal",
-                    "calibre lets the propagation pass. Charge and relax walk the same way.")
+            .comment("true: material crossings shape the chain. Into a sturdier material the",
+                    "delta lands once on the first block and stops there, absorbed. Into a",
+                    "weaker material the first block takes the previous block's whole",
+                    "remaining deficit (nireg - wbireg) instead of the plain delta; zero",
+                    "deficit means nothing crosses and the walk stops. Equal calibre passes",
+                    "untouched. Charge and relax walk the same way.")
             .define("materialBoundaryStops", true);
 
     private static final ModConfigSpec.IntValue MAX_LOAD_PATH = B
@@ -145,7 +147,9 @@ public final class SIConfig {
             .defineInRange("restCheckTicks", 20, 1, 1200);
 
     private static final ModConfigSpec.BooleanValue SUBLEVELS_FLOAT_WHEN_RECONVERTED = B
-            .comment("true: blocks a landed sub-level converts back become anchors (ground).",
+            .comment("true: blocks a landed sub-level converts back become anchors (ground),",
+                    "but only where they touch an existing anchor; the rest land tracked",
+                    "at natural and the landing is re-checked.",
                     "false: they re-enter the world at their natural integrity, tracked, and",
                     "are immediately re-checked - an ungrounded landing falls again.")
             .define("subLevelsFloatWhenReconverted", true);

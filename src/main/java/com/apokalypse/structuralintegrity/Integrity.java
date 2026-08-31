@@ -207,13 +207,21 @@ public final class Integrity {
      * placement above it, so it is charged once per block, while the tip is charged
      * once in its life.
      *
-     * Material matters at the crossings. Within one nireg calibre the delta just
-     * travels; the step where it would pass INTO a sturdier material - the next
-     * block's natural integrity above the previous block's - applies the delta
-     * once to that first block and stops there, absorbed. Into a lower or equal
-     * calibre it passes unchanged. Both signs walk the same way, so what a
-     * placement charged up to a boundary is exactly what the matching break
-     * relaxes back. Gated by {@code materialBoundaryStops}.
+     * Material matters at the crossings, and only there. The step where the walk
+     * would pass INTO a sturdier material - the next block's natural integrity
+     * above the previous block's - applies the delta once to that first block and
+     * stops there, absorbed. Into a WEAKER material the crossing concentrates:
+     * the first block of the new material takes the previous block's whole
+     * remaining deficit (nireg - wbireg, measured after that block's own
+     * application, floored at zero) instead of the plain delta, and the walk then
+     * carries on with the plain delta inside the new material. A pristine block's
+     * deficit after taking -1 is exactly 1, so undamaged chains behave as if the
+     * rule were not there; a worn strong block crushes its full accumulated
+     * damage down into whatever weaker thing carries it. A zero deficit - a
+     * clump-braced block still at or above natural - has nothing to hand down and
+     * ends the walk, traced !ABSORB. Both signs walk the same way; the relax
+     * hands its deficit across as healing, still capped at natural. Equal calibre
+     * passes untouched. Gated by {@code materialBoundaryStops}.
      *
      * This is a chain and not a flood, and the difference is the whole behaviour. A
      * flood charges every block connected to the support, which means a placement on
@@ -266,6 +274,10 @@ public final class Integrity {
         // a null origin starts the walk with no boundary to cross.
         int prevNatural = origin != null && isStructural(level, origin, null)
                 ? naturalOf(level, origin, level.getBlockState(origin)) : 0;
+        // The previous block's remaining deficit, for the weaker-material transfer.
+        // -1 until the walk has applied to a block: the origin is the load, not
+        // part of the chain, so its own wear is not inherited on the first step.
+        int prevDeficit = -1;
 
         while (cur != null) {
             if (count >= maxLoadPath) {
@@ -283,7 +295,17 @@ public final class Integrity {
             }
 
             int natural = naturalOf(level, cur, level.getBlockState(cur));
-            boolean boundary = boundaryStops && prevNatural > 0 && natural > prevNatural;
+            boolean rising = boundaryStops && prevNatural > 0 && natural > prevNatural;
+            boolean falling = boundaryStops && prevNatural > 0 && natural < prevNatural
+                    && prevDeficit >= 0;
+            if (falling && prevDeficit == 0) {
+                // The strong material above carries no wear - nothing crosses.
+                trace.append("!ABSORB");
+                break;
+            }
+            // The interface block takes the strong side's whole deficit; every
+            // other step takes the plain delta.
+            int applied = falling ? (delta < 0 ? -prevDeficit : prevDeficit) : delta;
 
             int stored = storedAt(level, reg, cur);
             int now;
@@ -291,9 +313,9 @@ public final class Integrity {
                 // A block cannot be worse than spent. Below FAIL_AT the number is
                 // meaningless - it is already queued for destruction - and it only
                 // makes the report harder to read.
-                now = Math.max(failAt, stored + delta);
+                now = Math.max(failAt, stored + applied);
             } else {
-                now = Math.min(stored + delta, Math.max(stored, natural));
+                now = Math.min(stored + applied, Math.max(stored, natural));
             }
             if (now != stored) {
                 reg.set(cur, now);
@@ -304,19 +326,23 @@ public final class Integrity {
             }
             trace.append(cur.getX()).append(',').append(cur.getY()).append(',')
                     .append(cur.getZ()).append('=').append(now);
+            if (falling) {
+                trace.append("(x").append(applied).append(')');
+            }
 
             if (delta < 0 && now <= failAt) {
                 trace.append("!SNAP");
                 snap(cur, prev, failed, trace);
                 break;
             }
-            if (boundary) {
+            if (rising) {
                 // Sturdier material: this first block took the delta, nothing
                 // travels past it.
                 trace.append("!BOUNDARY");
                 break;
             }
 
+            prevDeficit = Math.max(0, natural - now);
             prevNatural = natural;
             prev = cur;
             cur = supportOf(level, reg, cur, visited);

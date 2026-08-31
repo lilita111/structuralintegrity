@@ -483,8 +483,8 @@ public final class SIFall {
     /**
      * Moves every block currently in the plot back into the world at the aligned anchor,
      * the exact mirror of {@link #assemble}: same {@link SubLevelAssemblyHelper#moveBlocks},
-     * anchors swapped, and {@link WbiReg#clear} on the destinations instead of the sources.
-     * Clearing a destination row is also the entire "set as anchor" step - a cleared row
+     * anchors swapped, and {@link WbiReg#clear} on the destinations that touch existing
+     * ground. Clearing a destination row is also the entire "set as anchor" step - a cleared row
      * reads as {@link WbiReg#ANCHOR} until {@link Integrity#storedAt} re-derives it from
      * whatever block actually landed there, anchor-eligible or not.
      */
@@ -522,10 +522,36 @@ public final class SIFall {
         SubLevelAssemblyHelper.moveBlocks(level, transform, blocks);
 
         if (SIConfig.subLevelsFloatWhenReconverted()) {
-            // The blocks are back in the world at these positions; anything that belongs
-            // there as an anchor will be re-derived the next time Integrity looks at it.
+            // A landing only mints ground where it touches ground: a landed block
+            // becomes an anchor (row cleared) only if a neighbour OUTSIDE the landed
+            // set already reads as an anchor - checked with the pure peek, and before
+            // any clearing, so landed blocks can never anchor each other. The rest
+            // re-enter tracked at natural, and the landing is re-checked next tick.
+            Set<BlockPos> dests = new HashSet<>(blocks.size());
             for (BlockPos p : blocks) {
-                reg.clear(transform.apply(p));
+                dests.add(transform.apply(p));
+            }
+            int anchored = 0;
+            for (BlockPos dest : dests) {
+                boolean touchesAnchor = false;
+                for (Direction d : Direction.values()) {
+                    BlockPos n = dest.relative(d);
+                    if (!dests.contains(n) && Integrity.isAnchor(level, reg, n)) {
+                        touchesAnchor = true;
+                        break;
+                    }
+                }
+                if (touchesAnchor) {
+                    reg.clear(dest);
+                    anchored++;
+                } else {
+                    reg.set(dest, Integrity.naturalOf(level, dest, level.getBlockState(dest)));
+                }
+            }
+            StructuralIntegrity.LOGGER.info("[SI] revert anchoring: {}/{} landed blocks touch existing ground",
+                    anchored, dests.size());
+            if (anchored < dests.size()) {
+                queueFall(level, targetAnchor);
             }
         } else {
             // The landing does not mint new ground. Every landed block re-enters tracked
