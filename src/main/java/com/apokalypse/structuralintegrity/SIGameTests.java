@@ -15,7 +15,6 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.BushBlock;
-import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -189,7 +188,7 @@ public final class SIGameTests {
             vanilla++;
             BlockState state = block.defaultBlockState();
             boolean structural = !(state.isAir() || block instanceof LiquidBlock
-                    || block instanceof BushBlock || block instanceof LeavesBlock);
+                    || block instanceof BushBlock);
             int nat = Integrity.naturalOf(level, pos, state);
             boolean never = Integrity.neverAnchor(level, pos, state);
             boolean hasRow = block.builtInRegistryHolder().getData(SIDataMaps.NATURAL) != null;

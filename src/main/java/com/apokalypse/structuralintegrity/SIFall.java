@@ -149,20 +149,42 @@ public final class SIFall {
     private static void runDestroy(ServerLevel level, Set<BlockPos> positions,
                                    Map<ServerLevel, LinkedHashSet<BlockPos>> fall) {
         WbiReg reg = WbiReg.of(level);
-        for (BlockPos pos : positions) {
-            if (!Integrity.isStructural(level, pos, null)) {
-                continue; // already gone
+        // Worklist, not a plain loop: splintering can spend a neighbour, and that
+        // neighbour's own break must splinter in turn, in this same pass.
+        java.util.ArrayDeque<BlockPos> work = new java.util.ArrayDeque<>(positions);
+        Set<BlockPos> done = new HashSet<>();
+        int failAt = SIConfig.failAt();
+        while (!work.isEmpty()) {
+            BlockPos pos = work.poll();
+            if (!done.add(pos) || !Integrity.isStructural(level, pos, null)) {
+                continue; // already handled or already gone
             }
+            var broken = level.getBlockState(pos).getBlock();
             boolean ok = level.destroyBlock(pos, true);
             reg.clear(pos);
             StructuralIntegrity.LOGGER.info("[SI] CRUSH destroy {} {} wbireg={}",
                     fmt(pos), ok ? "removed" : "FAILED", reg.size());
-            // Whatever it was carrying has just lost its support.
             for (Direction d : Direction.values()) {
                 BlockPos n = pos.relative(d);
-                if (Integrity.isStructural(level, n, null)) {
-                    fall.computeIfAbsent(level, l -> new LinkedHashSet<>()).add(n.immutable());
+                if (!Integrity.isStructural(level, n, null)) {
+                    continue;
                 }
+                // Splintering: a breaking block wears same-type neighbours by 1.
+                // Ground is exempt - an anchor has no row to wear and a neighbour
+                // breaking is not a disturbance that materialises one. Wear only,
+                // never an entry write.
+                if (level.getBlockState(n).getBlock() == broken && !reg.isAnchor(n)) {
+                    int now = Math.max(failAt, reg.get(n) - 1);
+                    reg.set(n, now);
+                    if (now <= failAt) {
+                        StructuralIntegrity.LOGGER.info("[SI] SPLINTER {} spent by {} breaking",
+                                fmt(n), fmt(pos));
+                        work.add(n.immutable());
+                        continue;
+                    }
+                }
+                // Whatever it was carrying has just lost its support.
+                fall.computeIfAbsent(level, l -> new LinkedHashSet<>()).add(n.immutable());
             }
         }
     }
@@ -545,7 +567,7 @@ public final class SIFall {
                     reg.clear(dest);
                     anchored++;
                 } else {
-                    reg.set(dest, Integrity.naturalOf(level, dest, level.getBlockState(dest)));
+                    reg.setEntry(dest, Integrity.naturalOf(level, dest, level.getBlockState(dest)));
                 }
             }
             StructuralIntegrity.LOGGER.info("[SI] revert anchoring: {}/{} landed blocks touch existing ground",

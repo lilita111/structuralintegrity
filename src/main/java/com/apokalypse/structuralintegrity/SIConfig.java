@@ -29,7 +29,7 @@ public final class SIConfig {
 
     private static final ModConfigSpec.ConfigValue<List<? extends String>> NON_STRUCTURAL_BLOCKS = B
             .comment("Blocks the integrity system ignores completely, as if they were air.",
-                    "Air, fluids, plants and leaves are always ignored; this list adds to that.")
+                    "Air, fluids and plants are always ignored; this list adds to that.")
             .defineListAllowEmpty("nonStructuralBlocks", List.of(), () -> "", SIConfig::isBlockId);
 
     // ---- anchors ----------------------------------------------------------
@@ -91,7 +91,7 @@ public final class SIConfig {
             .comment("true: material crossings shape the chain. Into a sturdier material the",
                     "delta lands once on the first block and stops there, absorbed. Into a",
                     "weaker material the first block takes the previous block's whole",
-                    "remaining deficit (nireg - wbireg) instead of the plain delta; zero",
+                    "remaining deficit (entry value - wbireg) instead of the plain delta; zero",
                     "deficit means nothing crosses and the walk stops. Equal calibre passes",
                     "untouched. Charge and relax walk the same way.")
             .define("materialBoundaryStops", true);

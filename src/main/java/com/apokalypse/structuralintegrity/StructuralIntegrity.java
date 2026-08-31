@@ -32,7 +32,7 @@ public class StructuralIntegrity {
                 + "(defaultIntegrity * sqrt(h/1.5), unbreakable=1024), else fragile=no collision");
         LOGGER.info("[SI] limits: maxRegion={} defaultIntegrity={}",
                 Integrity.MAX_REGION, Integrity.DEFAULT_INTEGRITY);
-        LOGGER.info("[SI] outside the system: air, fluids, plants (BushBlock) and leaves (LeavesBlock); "
+        LOGGER.info("[SI] outside the system: air, fluids and plants (BushBlock) - leaves are back in; "
                 + "nonStructuralBlocks adds to that");
         LOGGER.info("[SI] placement rule: touching ground stored = natural; otherwise stored = "
                 + "min(natural, strongest connection); the charge still goes down");
@@ -40,8 +40,10 @@ public class StructuralIntegrity {
                 + "by explosionShockwaveDelta; at most {} deep, charging floors at {} and can snap, "
                 + "relaxing caps at natural", Integrity.MAX_LOAD_PATH, Integrity.FAIL_AT);
         LOGGER.info("[SI] material boundary: entering a higher-nireg material applies the delta once and "
-                + "stops; entering a weaker one, the first block takes the previous block's whole deficit "
-                + "(zero deficit absorbs the walk); equal calibre passes");
+                + "stops; entering a weaker one, the first block takes the previous block's whole deficit, "
+                + "measured against its recorded entry value (zero deficit absorbs the walk); equal calibre passes");
+        LOGGER.info("[SI] splintering: a block broken by the system wears same-type tracked neighbours "
+                + "by 1; a neighbour spent by that breaks and splinters in turn; ground is exempt");
         LOGGER.info("[SI] revert anchoring: a landed sub-level's blocks become anchors only where they "
                 + "touch existing ground; the rest land tracked at natural and are re-checked");
         LOGGER.info("[SI] support = gravity first: DOWN, then sideways, then UP; one rule for placement and for load");

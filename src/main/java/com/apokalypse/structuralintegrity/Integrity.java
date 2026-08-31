@@ -5,7 +5,6 @@ import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.BushBlock;
-import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
@@ -342,7 +341,12 @@ public final class Integrity {
                 break;
             }
 
-            prevDeficit = Math.max(0, natural - now);
+            // Deficit is measured against the value this row ENTERED tracking with,
+            // not its material's natural - a fence that entered support-limited at 7
+            // and wore to 6 hands down 1, not natural-minus-stored. Legacy rows with
+            // no recorded entry fall back to natural (the old behaviour).
+            int entry = reg.entryOf(cur);
+            prevDeficit = Math.max(0, (entry >= 0 ? Math.min(entry, natural) : natural) - now);
             prevNatural = natural;
             prev = cur;
             cur = supportOf(level, reg, cur, visited);
@@ -460,7 +464,7 @@ public final class Integrity {
 
         if (support == null) {
             // Placed touching nothing structural. It supports itself and no more.
-            reg.set(pos, 0);
+            reg.setEntry(pos, 0);
             return new Placed(pos.immutable(), natural, 0, null, 0, false, List.of(), 0, false, "");
         }
 
@@ -489,14 +493,14 @@ public final class Integrity {
             // Touching ground anywhere. Full strength, and nothing is charged -
             // rock takes the load and passes none on.
             int assigned = initialValue(level, pos, natural, true);
-            reg.set(pos, assigned);
+            reg.setEntry(pos, assigned);
             return new Placed(pos.immutable(), natural, assigned,
                     support.immutable(), WbiReg.ANCHOR, true, List.of(), 0, false, "");
         }
 
         // Inherit the best footing, then charge the structure the load rests on.
         int assigned = initialValue(level, pos, Math.min(natural, best), true);
-        reg.set(pos, assigned);
+        reg.setEntry(pos, assigned);
         Chained d = chain(level, reg, support, pos, null, -1);
         return new Placed(pos.immutable(), natural, assigned,
                 support.immutable(), best, false, d.failed(), d.count(), d.capped(), d.trace());
@@ -522,7 +526,7 @@ public final class Integrity {
             if (!isStructural(level, n, ghost) || !isAnchor(level, reg, n)) {
                 continue;
             }
-            reg.set(n, initialValue(level, n, naturalOf(level, n, level.getBlockState(n)), true));
+            reg.setEntry(n, initialValue(level, n, naturalOf(level, n, level.getBlockState(n)), true));
             out.add(n.immutable());
         }
         return out;
@@ -835,7 +839,7 @@ public final class Integrity {
             return WbiReg.ANCHOR;
         }
         int init = initialValue(level, pos, naturalOf(level, pos, state), true);
-        reg.set(pos, init);
+        reg.setEntry(pos, init);
         return init;
     }
 
@@ -900,11 +904,13 @@ public final class Integrity {
     }
 
     /**
-     * Air, fluids, plants and leaves are outside the system - not structure,
-     * carrying no load and transmitting none. Plants are anything growing:
-     * {@link BushBlock} covers flowers, saplings, crops, grass and mushrooms, and
-     * {@link LeavesBlock} covers foliage - classes, not lists, so modded blocks
-     * extending them are covered too. A torch is NOT excluded, it is integrity 1:
+     * Air, fluids and plants are outside the system - not structure, carrying no
+     * load and transmitting none. Plants are anything growing: {@link BushBlock}
+     * covers flowers, saplings, crops, grass and mushrooms - a class, not a list,
+     * so modded blocks extending it are covered too. Leaves are IN the system:
+     * untouched they read as ground like any untracked block, and they track at
+     * their hardness-derived integrity once the solver writes to them. A torch is
+     * NOT excluded, it is integrity 1:
      * place a block on one and the torch is at 0 and the block it was carrying
      * has nowhere to sit. The config's nonStructuralBlocks adds to this.
      */
@@ -915,7 +921,7 @@ public final class Integrity {
         BlockState state = level.getBlockState(pos);
         Block block = state.getBlock();
         if (state.isAir() || block instanceof LiquidBlock
-                || block instanceof BushBlock || block instanceof LeavesBlock) {
+                || block instanceof BushBlock) {
             return false;
         }
         return !SIConfig.nonStructuralBlocks().contains(block);
