@@ -102,16 +102,18 @@ public final class Integrity {
      * new block inherits from, {@link #degrade} asks it where the load goes next, and
      * because both ask the same question the answer cannot disagree between them.
      *
-     * Strongest wins outright - a single structural neighbour is support with nothing
-     * to compare it against, and one clearly stronger than the rest is unambiguous
-     * regardless of where it sits. Only a tie needs a rule, and the tie rule follows
-     * gravity rather than {@link Direction} enumeration order: DOWN wins any tie it is
-     * part of, because that is the direction the load is actually falling toward. A
-     * tie among only sideways neighbours has no physical reason to prefer one over
-     * another, so it is broken by chance instead of by an arbitrary fixed order - so a
-     * block resting on ground and touching a wall of equal strength is held by the
-     * ground, but a block with only two side walls of equal strength picks one at
-     * random rather than always the same one.
+     * Gravity decides, not strength. One structural neighbour is support with
+     * nothing to compare against - the load goes along it wherever it points, UP
+     * included. With more than one, the most downward-facing wins outright: DOWN
+     * if it is there, otherwise a sideways neighbour, otherwise UP. Several
+     * sideways candidates have no physical reason to prefer one over another, so
+     * the pick is random rather than a fixed enumeration order that would make
+     * every collapse lean the same compass direction.
+     *
+     * Stored strength does not vote. It used to - strongest neighbour won - but
+     * that let a strong side wall pull the load sideways off a weak footing, and
+     * pressure does not do that: it goes down through whatever is underneath,
+     * and whether the footing can take it is the footing's problem.
      *
      * @param exclude positions the chain has already been through, or null
      * @return the supporting neighbour, or null if nothing structural touches it
@@ -119,8 +121,9 @@ public final class Integrity {
     @Nullable
     public static BlockPos supportOf(ServerLevel level, WbiReg reg, BlockPos pos,
                                      @Nullable Set<BlockPos> exclude) {
-        List<BlockPos> tied = new ArrayList<>(6);
-        int bestValue = Integer.MIN_VALUE;
+        BlockPos down = null;
+        BlockPos up = null;
+        List<BlockPos> sideways = new ArrayList<>(4);
         for (Direction d : DIRS) {
             BlockPos n = pos.relative(d).immutable();
             if (exclude != null && exclude.contains(n)) {
@@ -129,26 +132,22 @@ public final class Integrity {
             if (!isStructural(level, n, null)) {
                 continue;
             }
-            int v = storedAt(level, reg, n);
-            if (v > bestValue) {
-                bestValue = v;
-                tied.clear();
-                tied.add(n);
-            } else if (v == bestValue) {
-                tied.add(n);
+            if (d == Direction.DOWN) {
+                down = n;
+            } else if (d == Direction.UP) {
+                up = n;
+            } else {
+                sideways.add(n);
             }
         }
-        if (tied.isEmpty()) {
-            return null;
-        }
-        if (tied.size() == 1) {
-            return tied.get(0);
-        }
-        BlockPos down = pos.below().immutable();
-        if (tied.contains(down)) {
+        if (down != null) {
             return down;
         }
-        return tied.get(level.getRandom().nextInt(tied.size()));
+        if (!sideways.isEmpty()) {
+            return sideways.size() == 1 ? sideways.get(0)
+                    : sideways.get(level.getRandom().nextInt(sideways.size()));
+        }
+        return up;
     }
 
     /**
@@ -223,15 +222,6 @@ public final class Integrity {
             trace.append(cur.getX()).append(',').append(cur.getY()).append(',')
                     .append(cur.getZ()).append('=').append(now);
 
-            // Run at every step, in the act of taking the point off: look one hop
-            // around the block just charged for neighbours already at or below
-            // FAIL_AT. Those are dead in the registry but still standing - nothing
-            // ever destroyed them - and the chain passing next to one is the moment
-            // it gets noticed and reported failed. One hop only, deliberately not a
-            // flood: a large dead mass is discovered piecewise as chains actually
-            // touch it, never excavated all at once.
-            detectFailedNeighbors(level, reg, cur, visited, failed, trace);
-
             if (now <= FAIL_AT) {
                 failed.add(cur);
                 trace.append("!FAIL");
@@ -290,40 +280,6 @@ public final class Integrity {
     }
 
     /**
-     * The detection, stated once: <b>a block whose stored integrity is already at or
-     * below {@link #FAIL_AT}, still standing in the world, adjacent to a block the
-     * chain is charging right now.</b>
-     *
-     * Such a block spent its last point at some earlier moment - a placement that
-     * assigned it zero, a chain that drove it there - but was never destroyed, so it
-     * stands dead in the registry with nothing left to give. The chain walking past
-     * is when it is noticed: each step that removes one integrity also looks one hop
-     * around the block it just charged, and any dead neighbour found is reported
-     * failed so the caller destroys it with the rest.
-     *
-     * One hop, run per step - NOT a flood over the whole connected cluster. A large
-     * dead mass is discovered piece by piece as chains actually brush against it.
-     */
-    private static void detectFailedNeighbors(ServerLevel level, WbiReg reg, BlockPos pos,
-                                              Set<BlockPos> chainVisited, List<BlockPos> failed,
-                                              StringBuilder trace) {
-        for (Direction d : DIRS) {
-            BlockPos n = pos.relative(d).immutable();
-            if (chainVisited.contains(n) || failed.contains(n)) {
-                continue;
-            }
-            if (!isStructural(level, n, null) || isAnchor(level, reg, n)) {
-                continue;
-            }
-            if (storedAt(level, reg, n) <= FAIL_AT) {
-                failed.add(n);
-                trace.append(" +dead@").append(n.getX()).append(',').append(n.getY())
-                        .append(',').append(n.getZ());
-            }
-        }
-    }
-
-    /**
      * Assign the placed block its integrity from the block it was built on.
      *
      * <pre>
@@ -345,8 +301,9 @@ public final class Integrity {
      * Whatever it was holding is then floating, and goes the way every disconnected
      * block goes: {@link #isConnectedToAnchor} is false and it becomes a sublevel.
      *
-     * The support is the best neighbour in any direction, not just below, so
-     * building out from a cliff face costs the same as building up from it.
+     * The support follows gravity - below first, then sideways, then above - so a
+     * block bridging out from a cliff face is still held by the cliff, but a block
+     * with anything at all underneath is held by that, whatever a side wall offers.
      */
     @Nullable
     public static Placed place(ServerLevel level, WbiReg reg, BlockPos pos) {
