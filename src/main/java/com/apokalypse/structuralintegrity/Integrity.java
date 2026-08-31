@@ -332,6 +332,12 @@ public final class Integrity {
             if (delta < 0 && now <= failAt) {
                 trace.append("!SNAP");
                 snap(cur, prev, failed, trace);
+                // The config said only the weaker side breaks - but the splinter
+                // rule would wear the stronger side anyway when both are the same
+                // material, breaking it in the same pass. Shield it.
+                if (prev != null && !SIConfig.breakStrongerBlock()) {
+                    SIFall.protectFromSplinter(level, prev);
+                }
                 break;
             }
             if (rising) {

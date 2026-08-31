@@ -60,6 +60,23 @@ public final class SIFall {
     private static final Map<ServerLevel, LinkedHashSet<BlockPos>> PENDING_DESTROY = new HashMap<>();
 
     /**
+     * The stronger side of each snap this tick, when config says only the weaker
+     * breaks. Splinter wear skips these: without the shield, a same-material
+     * stronger block is adjacent to the breaking weaker one, usually worn by the
+     * same chain, and the splinter -1 breaks it in the same pass - an uncontrolled
+     * breakStrongerBlock=true. Cleared with the pending maps every tick.
+     */
+    private static final Map<ServerLevel, Set<BlockPos>> SPLINTER_PROTECTED = new HashMap<>();
+
+    /** Shield this position from splinter wear during the next destroy pass. */
+    public static void protectFromSplinter(ServerLevel level, BlockPos pos) {
+        if (running) {
+            return;
+        }
+        SPLINTER_PROTECTED.computeIfAbsent(level, l -> new HashSet<>()).add(pos.immutable());
+    }
+
+    /**
      * Sub-levels this mod itself assembled, as opposed to any other sub-level that happens
      * to exist in the same {@link ServerLevel} - sable is a shared physics engine, and
      * {@link ServerSubLevelContainer#getAllSubLevels} returns every sub-level in the level,
@@ -125,13 +142,16 @@ public final class SIFall {
 
         Map<ServerLevel, LinkedHashSet<BlockPos>> destroy = new HashMap<>(PENDING_DESTROY);
         Map<ServerLevel, LinkedHashSet<BlockPos>> fall = new HashMap<>(PENDING_FALL);
+        Map<ServerLevel, Set<BlockPos>> shielded = new HashMap<>(SPLINTER_PROTECTED);
         PENDING_DESTROY.clear();
         PENDING_FALL.clear();
+        SPLINTER_PROTECTED.clear();
 
         running = true;
         try {
             for (Map.Entry<ServerLevel, LinkedHashSet<BlockPos>> e : destroy.entrySet()) {
-                runDestroy(e.getKey(), e.getValue(), fall);
+                runDestroy(e.getKey(), e.getValue(), fall,
+                        shielded.getOrDefault(e.getKey(), Set.of()));
             }
             for (Map.Entry<ServerLevel, LinkedHashSet<BlockPos>> e : fall.entrySet()) {
                 runFall(e.getKey(), e.getValue());
@@ -147,7 +167,8 @@ public final class SIFall {
      * and only loses its top.
      */
     private static void runDestroy(ServerLevel level, Set<BlockPos> positions,
-                                   Map<ServerLevel, LinkedHashSet<BlockPos>> fall) {
+                                   Map<ServerLevel, LinkedHashSet<BlockPos>> fall,
+                                   Set<BlockPos> shielded) {
         WbiReg reg = WbiReg.of(level);
         // Worklist, not a plain loop: splintering can spend a neighbour, and that
         // neighbour's own break must splinter in turn, in this same pass.
@@ -188,7 +209,8 @@ public final class SIFall {
                 // Ground is exempt - an anchor has no row to wear and a neighbour
                 // breaking is not a disturbance that materialises one. Wear only,
                 // never an entry write.
-                if (level.getBlockState(n).getBlock() == broken && !reg.isAnchor(n)) {
+                if (level.getBlockState(n).getBlock() == broken && !reg.isAnchor(n)
+                        && !shielded.contains(n)) {
                     int now = Math.max(failAt, reg.get(n) - 1);
                     reg.set(n, now);
                     if (now <= failAt) {
