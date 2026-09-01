@@ -108,8 +108,15 @@ public final class Integrity {
      * included. With more than one, the most downward-facing wins outright: DOWN
      * if it is there, otherwise a sideways neighbour, otherwise UP. Several
      * sideways candidates have no physical reason to prefer one over another, so
-     * the pick is random rather than a fixed enumeration order that would make
-     * every collapse lean the same compass direction.
+     * the pick is scattered by position rather than following a fixed enumeration
+     * order that would make every collapse lean the same compass direction.
+     *
+     * Scattered, NOT re-rolled. A RandomSource here breaks the invariant above:
+     * the same block would answer one neighbour to place() and another to chain(),
+     * inheriting its strength through one wall and spending its load through the
+     * other, and the same structure would collapse differently every evaluation.
+     * Hashing the position gives the same spread across a wall - adjacent blocks
+     * pick differently - while any one block always answers the same way.
      *
      * Stored strength does not vote. It used to - strongest neighbour won - but
      * that let a strong side wall pull the load sideways off a weak footing, and
@@ -149,9 +156,22 @@ public final class Integrity {
         }
         if (!sideways.isEmpty()) {
             return sideways.size() == 1 ? sideways.get(0)
-                    : sideways.get(level.getRandom().nextInt(sideways.size()));
+                    : sideways.get(Math.floorMod(scatter(pos), sideways.size()));
         }
         return up;
+    }
+
+    /**
+     * A stable per-position scatter for the sideways tie-break - a cheap integer hash
+     * of the coordinates, not a random draw, so the choice varies from block to block
+     * but never varies for the same block between calls.
+     */
+    private static int scatter(BlockPos pos) {
+        int h = pos.getX() * 0x9E3779B9 ^ pos.getY() * 0x85EBCA6B ^ pos.getZ() * 0xC2B2AE35;
+        h ^= h >>> 15;
+        h *= 0x2545F491;
+        h ^= h >>> 13;
+        return h;
     }
 
     /**
