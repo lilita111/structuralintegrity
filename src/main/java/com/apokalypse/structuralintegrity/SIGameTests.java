@@ -178,7 +178,7 @@ public final class SIGameTests {
         ServerLevel level = helper.getLevel();
         BlockPos pos = helper.absolutePos(BlockPos.ZERO);
         Map<Integer, Integer> tiers = new TreeMap<>();
-        StringBuilder csv = new StringBuilder("id,integrity,never_anchor,source,structural\n");
+        StringBuilder csv = new StringBuilder("id,integrity,never_anchor,source,structural,hardness,volume,vol_derived\n");
         int vanilla = 0;
         for (Block block : BuiltInRegistries.BLOCK) {
             ResourceLocation id = BuiltInRegistries.BLOCK.getKey(block);
@@ -192,9 +192,13 @@ public final class SIGameTests {
             int nat = Integrity.naturalOf(level, pos, state);
             boolean never = Integrity.neverAnchor(level, pos, state);
             boolean hasRow = block.builtInRegistryHolder().getData(SIDataMaps.NATURAL) != null;
+            float hardness = safeHardness(level, pos, state);
+            double volume = shapeVolume(level, pos, state);
             csv.append(id.getPath()).append(',').append(nat).append(',').append(never)
                     .append(',').append(hasRow ? "datamap" : "derived").append(',')
-                    .append(structural).append('\n');
+                    .append(structural).append(',').append(hardness).append(',')
+                    .append(String.format(java.util.Locale.ROOT, "%.5f", volume)).append(',')
+                    .append(volumeDerived(hardness, volume)).append('\n');
             if (structural) {
                 tiers.merge(nat, 1, Integer::sum);
             }
@@ -208,5 +212,55 @@ public final class SIGameTests {
         StructuralIntegrity.LOGGER.info("[SI] SWEEP {} vanilla blocks -> {} (structural tier -> count: {})",
                 vanilla, out, tiers);
         helper.succeed();
+    }
+
+    /**
+     * Diagnostic only - nothing in the running mod calls these. The sweep records
+     * what a size-aware derivation WOULD say next to what the shipped
+     * hardness-only derivation actually says, so the two can be compared across the
+     * whole registry instead of argued about one block at a time.
+     */
+    private static float safeHardness(ServerLevel level, BlockPos pos, BlockState state) {
+        try {
+            return state.getDestroySpeed(level, pos);
+        } catch (Exception e) {
+            return -2.0f;
+        }
+    }
+
+    /** Occupied fraction of the block cube, summed over the collision shape's boxes. */
+    private static double shapeVolume(ServerLevel level, BlockPos pos, BlockState state) {
+        try {
+            var shape = state.getCollisionShape(level, pos);
+            if (shape.isEmpty()) {
+                return 0.0;
+            }
+            double[] total = {0.0};
+            shape.forAllBoxes((x1, y1, z1, x2, y2, z2) ->
+                    total[0] += (x2 - x1) * (y2 - y1) * (z2 - z1));
+            return total[0];
+        } catch (Exception e) {
+            return -1.0;
+        }
+    }
+
+    /**
+     * The shipped formula with hardness multiplied by occupied volume before the
+     * square root, so a full cube derives exactly what it derives today and a thin
+     * shape falls off with how little of the cube it actually fills.
+     */
+    private static int volumeDerived(float hardness, double volume) {
+        if (hardness < -1.5f || volume < 0) {
+            return -1;
+        }
+        if (hardness < 0) {
+            return 1024;
+        }
+        if (hardness == 0 || volume == 0) {
+            return SIConfig.defaultFragileIntegrity();
+        }
+        double effective = hardness * volume;
+        int derived = (int) Math.round(SIConfig.defaultIntegrity() * Math.sqrt(effective / 1.5));
+        return Math.min(1024, Math.max(2, derived));
     }
 }
