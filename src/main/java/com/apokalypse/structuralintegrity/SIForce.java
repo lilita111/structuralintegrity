@@ -16,6 +16,11 @@ import java.util.List;
  * outward from the blast, a collapse pushes gently and away from whatever gave
  * way underneath it.
  *
+ * {@link #applyTorque} is the same function for spin: an axis and a magnitude,
+ * every guard and conversion identical, ending at a torque impulse instead of a
+ * linear one. A collapse uses both - the linear push decides which way the piece
+ * goes, the torque decides that it rolls rather than slides.
+ *
  * A one-shot impulse, not a queued force. Sable resets every queued force group
  * at the start of each physics tick, so a group is the wrong tool for a blast:
  * it would have to be re-applied every tick to mean anything. An impulse goes
@@ -28,7 +33,9 @@ import java.util.List;
  * the body happens to be unrotated. Freshly assembled sub-levels are unrotated,
  * which is exactly why this never showed up in testing; a tumbling one would have
  * been shoved sideways. {@link #apply} converts through the pose the same way
- * sable's own {@code /sable physics impulse ... global} command does.
+ * sable's own {@code /sable physics impulse ... global} command does, and
+ * {@link #applyTorque} does the same for the axis - rapier rotates the torque by
+ * the body's orientation on exactly the same line as the force.
  */
 public final class SIForce {
     private SIForce() {}
@@ -92,13 +99,95 @@ public final class SIForce {
         double localScale = scale / localLen;
 
         Vector3d impulse = new Vector3d(local.x * localScale, local.y * localScale, local.z * localScale);
+        Vector3d before = handle.getLinearVelocity(new Vector3d());
         handle.applyLinearImpulse(impulse);
+        Vector3d after = handle.getLinearVelocity(new Vector3d());
+        StructuralIntegrity.LOGGER.info("[SI-DIAG] linear v before=({},{},{}) after=({},{},{}) mass={}",
+                fmt(before.x), fmt(before.y), fmt(before.z), fmt(after.x), fmt(after.y), fmt(after.z),
+                fmt(subLevel.getMassTracker().getMass()));
 
         StructuralIntegrity.LOGGER.info("[SI] FORCE sub-level={} worldDir=({},{},{}) magnitude={} "
                         + "-> localImpulse=({},{},{})",
                 System.identityHashCode(subLevel),
                 fmt(worldUnit.x), fmt(worldUnit.y), fmt(worldUnit.z),
                 fmt(magnitude), fmt(impulse.x), fmt(impulse.y), fmt(impulse.z));
+        return true;
+    }
+
+    /**
+     * Spin a sub-level.
+     *
+     * The angular twin of {@link #apply}, and deliberately its mirror image: same
+     * guards, same world-space normalise, same conversion into the body's frame,
+     * same mass scaling. Only the last line differs - a torque impulse rather than a
+     * linear one. Rapier rotates both by the body's orientation before applying
+     * them, so an axis needs converting exactly as a direction does.
+     *
+     * @param subLevel  the body to spin
+     * @param axis      which way it turns, in WORLD space, right-handed about the
+     *                  axis, any length - normalised here and converted into the
+     *                  body's own frame before it is applied
+     * @param magnitude how hard. Unlike {@link #apply}'s magnitude this is not a
+     *                  velocity in disguise even with forceScalesWithMass on: rapier
+     *                  divides a torque impulse by the moment of inertia, which grows
+     *                  with the square of the body's size while mass grows with its
+     *                  volume. Scaling by mass keeps a number meaning roughly the
+     *                  same thing across sizes; it does not make it rad/s.
+     * @return true if the torque impulse reached the physics pipeline
+     */
+    public static boolean applyTorque(ServerSubLevel subLevel, Vec3 axis, double magnitude) {
+        if (magnitude <= 0.0) {
+            return false;
+        }
+        double len = axis.length();
+        if (!(len > MIN_DIRECTION_LENGTH) || !Double.isFinite(len)) {
+            StructuralIntegrity.LOGGER.warn("[SI] torque skipped: axis {} has no usable length", axis);
+            return false;
+        }
+
+        RigidBodyHandle handle = RigidBodyHandle.of(subLevel);
+        if (handle == null || !handle.isValid()) {
+            StructuralIntegrity.LOGGER.warn("[SI] torque skipped: no valid rigid body handle for sub-level {}",
+                    System.identityHashCode(subLevel));
+            return false;
+        }
+
+        double scale = magnitude;
+        if (SIConfig.forceScalesWithMass()) {
+            double mass = subLevel.getMassTracker().getMass();
+            if (!(mass > 0.0) || !Double.isFinite(mass)) {
+                StructuralIntegrity.LOGGER.warn("[SI] torque skipped: sub-level {} reports mass {}",
+                        System.identityHashCode(subLevel), mass);
+                return false;
+            }
+            scale *= mass;
+        }
+
+        Vec3 worldUnit = axis.scale(1.0 / len);
+        Vec3 local = subLevel.logicalPose().transformNormalInverse(worldUnit);
+        double localLen = local.length();
+        if (!(localLen > MIN_DIRECTION_LENGTH) || !Double.isFinite(localLen)) {
+            StructuralIntegrity.LOGGER.warn("[SI] torque skipped: axis {} vanished converting to "
+                    + "the frame of sub-level {}", axis, System.identityHashCode(subLevel));
+            return false;
+        }
+        double localScale = scale / localLen;
+
+        Vector3d torque = new Vector3d(local.x * localScale, local.y * localScale, local.z * localScale);
+        Vector3d wBefore = handle.getAngularVelocity(new Vector3d());
+        handle.applyTorqueImpulse(torque);
+        Vector3d wAfter = handle.getAngularVelocity(new Vector3d());
+        var inertia = subLevel.getMassTracker().getInverseInertiaTensor();
+        StructuralIntegrity.LOGGER.info("[SI-DIAG] angular w before=({},{},{}) after=({},{},{}) "
+                        + "invInertiaDiag=({},{},{})",
+                fmt(wBefore.x), fmt(wBefore.y), fmt(wBefore.z), fmt(wAfter.x), fmt(wAfter.y), fmt(wAfter.z),
+                fmt(inertia.m00()), fmt(inertia.m11()), fmt(inertia.m22()));
+
+        StructuralIntegrity.LOGGER.info("[SI] TORQUE sub-level={} worldAxis=({},{},{}) magnitude={} "
+                        + "-> localTorque=({},{},{})",
+                System.identityHashCode(subLevel),
+                fmt(worldUnit.x), fmt(worldUnit.y), fmt(worldUnit.z),
+                fmt(magnitude), fmt(torque.x), fmt(torque.y), fmt(torque.z));
         return true;
     }
 
@@ -140,6 +229,38 @@ public final class SIForce {
     }
 
     /**
+     * The axis a collapsing piece should turn about, so that its top leads in the
+     * direction it is already toppling instead of the whole thing sliding away flat.
+     *
+     * That axis is {@code up x toppleDirection}. Take a piece toppling toward +X: the
+     * cross product gives -Z, and a body spinning about -Z carries a point above its
+     * centre of mass toward +X - the top goes over the way the piece is already
+     * leaning, which is what falling masonry does.
+     *
+     * A piece whose mass sits squarely over the failure has no toppling direction to
+     * cross with - {@link #toppleDirection} answers straight down there, and up
+     * crossed with down is nothing. Rather than leave it unspun, one of the four
+     * horizontal directions is chosen by {@link Integrity#scatter}, which is the same
+     * stable per-position hash the support tie-break uses: neighbouring collapses
+     * fall different ways, but the same collapse always falls the same way.
+     */
+    public static Vec3 tumbleAxis(BlockPos failed, List<BlockPos> blocks) {
+        Vec3 topple = toppleDirection(failed, blocks);
+        double dx = topple.x;
+        double dz = topple.z;
+        if (dx * dx + dz * dz < 1.0e-4) {
+            switch (Math.floorMod(Integrity.scatter(failed), 4)) {
+                case 0 -> { dx = 1.0; dz = 0.0; }
+                case 1 -> { dx = -1.0; dz = 0.0; }
+                case 2 -> { dx = 0.0; dz = 1.0; }
+                default -> { dx = 0.0; dz = -1.0; }
+            }
+        }
+        // up x (dx, 0, dz), written out rather than built as two vectors and crossed.
+        return new Vec3(dz, 0.0, -dx);
+    }
+
+    /**
      * How fast a sub-level is actually travelling, in m/s, asked of the physics
      * engine itself.
      *
@@ -153,8 +274,25 @@ public final class SIForce {
         if (handle == null || !handle.isValid()) {
             return Vec3.ZERO;
         }
-        var v = handle.getLinearVelocity();
+        Vector3d v = handle.getLinearVelocity(new Vector3d());
         return new Vec3(v.x(), v.y(), v.z());
+    }
+
+    /**
+     * How fast a sub-level is actually turning, in rad/s about each world axis, asked
+     * of the physics engine itself.
+     *
+     * Global, not body-local: rapier reports angular velocity in world space even
+     * though it takes torque in the body's frame. So this can be compared directly
+     * against a {@link #tumbleAxis} without converting anything.
+     */
+    public static Vec3 angularVelocityOf(ServerSubLevel subLevel) {
+        RigidBodyHandle handle = RigidBodyHandle.of(subLevel);
+        if (handle == null || !handle.isValid()) {
+            return Vec3.ZERO;
+        }
+        Vector3d w = handle.getAngularVelocity(new Vector3d());
+        return new Vec3(w.x(), w.y(), w.z());
     }
 
     /**

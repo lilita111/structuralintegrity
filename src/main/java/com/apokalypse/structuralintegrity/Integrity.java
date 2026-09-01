@@ -165,8 +165,13 @@ public final class Integrity {
      * A stable per-position scatter for the sideways tie-break - a cheap integer hash
      * of the coordinates, not a random draw, so the choice varies from block to block
      * but never varies for the same block between calls.
+     *
+     * Package-private rather than private because {@link SIForce#tumbleAxis} needs
+     * the same property for a different question - which way a piece whose mass sits
+     * squarely over the failure should fall - and two hashes that must agree on
+     * "stable per position" are better as one.
      */
-    private static int scatter(BlockPos pos) {
+    static int scatter(BlockPos pos) {
         int h = pos.getX() * 0x9E3779B9 ^ pos.getY() * 0x85EBCA6B ^ pos.getZ() * 0xC2B2AE35;
         h ^= h >>> 15;
         h *= 0x2545F491;
@@ -293,6 +298,10 @@ public final class Integrity {
         // a null origin starts the walk with no boundary to cross.
         int prevNatural = origin != null && isStructural(level, origin, null)
                 ? naturalOf(level, origin, level.getBlockState(origin)) : 0;
+        // Set when the link just crossed was sideways AND this block is the sturdier
+        // material of the two, so the doubled cost was deferred onto it rather than
+        // taken by the block that handed the load over.
+        boolean owedSideways = false;
         // The previous block's remaining deficit, for the weaker-material transfer.
         // -1 until the walk has applied to a block: the origin is the load, not
         // part of the chain, so its own wear is not inherited on the first step.
@@ -322,9 +331,34 @@ public final class Integrity {
                 trace.append("!ABSORB");
                 break;
             }
+            // Where the load leaves this block, worked out BEFORE the charge is,
+            // because a sideways link costs one of its two blocks double. Safe to
+            // ask this early: cur is already in visited, and nothing between here
+            // and the bottom of the loop moves a neighbour's value.
+            BlockPos next = supportOf(level, reg, cur, visited);
+            boolean owes = owedSideways;
+            boolean owedNext = false;
+            if (next != null && next.getY() == cur.getY()) {
+                // The doubled loss always lands on the sturdier MATERIAL of the two,
+                // which is what forces a builder to reach for a better block as soon
+                // as they span rather than stack. A tie goes to the block handing the
+                // load on - the uniform-material case, and the one the reach numbers
+                // are tuned against. A block already owing from the link it arrived
+                // over does not owe twice; one sideways link, one doubling.
+                int nextNatural = naturalOf(level, next, level.getBlockState(next));
+                if (natural >= nextNatural) {
+                    owes = true;
+                } else {
+                    owedNext = true;
+                }
+            }
+
             // The interface block takes the strong side's whole deficit; every
             // other step takes the plain delta.
             int applied = falling ? (delta < 0 ? -prevDeficit : prevDeficit) : delta;
+            if (owes && (delta < 0 || SIConfig.sidewaysMultiplierOnRestore())) {
+                applied = scaleSideways(applied);
+            }
 
             int stored = storedAt(level, reg, cur);
             int now;
@@ -347,6 +381,9 @@ public final class Integrity {
                     .append(cur.getZ()).append('=').append(now);
             if (falling) {
                 trace.append("(x").append(applied).append(')');
+            }
+            if (owes) {
+                trace.append("(side").append(applied).append(')');
             }
 
             if (delta < 0 && now <= failAt) {
@@ -373,11 +410,67 @@ public final class Integrity {
             // no recorded entry fall back to natural (the old behaviour).
             int entry = reg.entryOf(cur);
             prevDeficit = Math.max(0, (entry >= 0 ? Math.min(entry, natural) : natural) - now);
+            owedSideways = owedNext;
             prevNatural = natural;
             prev = cur;
-            cur = supportOf(level, reg, cur, visited);
+            cur = next;
         }
         return new Chained(count, failed, capped, trace.toString());
+    }
+
+    /**
+     * A charge crossing a sideways link, scaled by
+     * {@link SIConfig#sidewaysLoadMultiplier}.
+     *
+     * Load handed straight down costs the plain amount. Load handed sideways costs
+     * double, and the doubled amount is billed to whichever of the link's two blocks
+     * is the sturdier material - not to the one doing the handing. That is what puts
+     * the cost of spanning on the good block: a floor or a roof reaching out over
+     * open air wears its own beams out, so building storeys means using better
+     * material than pillaring does.
+     *
+     * The consequence for reach is the point of the whole rule: at the default 2.0 a
+     * player can build out about half as far as they can build up in the same
+     * material, because every block placed along a ledge charges the innermost block
+     * twice over while every block placed on a pillar charges the bottom one once.
+     *
+     * The magnitude is scaled and the sign kept, and it never rounds down to nothing
+     * - a charge that was going to cost something still costs at least that much.
+     */
+    private static int scaleSideways(int applied) {
+        if (applied == 0) {
+            return 0;
+        }
+        double m = SIConfig.sidewaysLoadMultiplier();
+        int magnitude = Math.max(Math.abs(applied), (int) Math.round(Math.abs(applied) * m));
+        return applied < 0 ? -magnitude : magnitude;
+    }
+
+    /**
+     * The most integrity a block may inherit through a side face, rather than by
+     * sitting on top of its support.
+     *
+     * A side joint is the weaker joint, so the block arrives holding a fraction of
+     * its own natural - {@link SIConfig#sideInheritanceFactor}, half by default. The
+     * cap is deliberately on the block's OWN material and not on the value it
+     * inherits: halving the inherited value would halve again at every block further
+     * out, and a shelf would decay exponentially instead of simply being weaker.
+     * Every block out along a ledge is half strength; it is not half of the one
+     * before it.
+     *
+     * Halving alone never destroys a block. A material that would have stood at 1
+     * still stands at 1 - cracked, but not arriving already spent.
+     */
+    private static int sideInheritanceCap(int natural) {
+        double f = SIConfig.sideInheritanceFactor();
+        if (f >= 1.0) {
+            return natural;
+        }
+        int failAt = SIConfig.failAt();
+        if (natural <= failAt) {
+            return natural;
+        }
+        return Math.max(failAt + 1, (int) Math.floor(natural * f));
     }
 
     /**
@@ -500,6 +593,7 @@ public final class Integrity {
         // gravity; where strength is inherited from is a separate question.
         boolean founded = false;
         int best = Integer.MIN_VALUE;
+        int sideCap = sideInheritanceCap(natural);
         for (Direction dir : DIRS) {
             BlockPos n = pos.relative(dir).immutable();
             if (!isStructural(level, n, null)) {
@@ -510,14 +604,24 @@ public final class Integrity {
                 founded = true;
                 break;
             }
-            if (at > best) {
-                best = at;
+            // Seated on top of its support a block arrives as sound as that support,
+            // capped at its own natural. Stuck to the SIDE of one it arrives capped
+            // at a fraction of its natural instead: it is the joint that is weaker,
+            // not the neighbour, so the cap is the same however strong the wall is.
+            int cap = dir.getAxis().isHorizontal() ? sideCap : natural;
+            int candidate = Math.min(cap, at);
+            if (candidate > best) {
+                best = candidate;
             }
         }
 
         if (founded) {
             // Touching ground anywhere. Full strength, and nothing is charged -
-            // rock takes the load and passes none on.
+            // rock takes the load and passes none on. Ground is exempt from the
+            // side-face cap as well, and that exemption is what makes a ledge run
+            // out at half a pillar's reach rather than a quarter of it: the first
+            // block out from the ground stands at full strength, and every block
+            // placed after it charges that one double.
             int assigned = initialValue(level, pos, natural, true);
             reg.setEntry(pos, assigned);
             return new Placed(pos.immutable(), natural, assigned,
@@ -525,7 +629,11 @@ public final class Integrity {
         }
 
         // Inherit the best footing, then charge the structure the load rests on.
-        int assigned = initialValue(level, pos, Math.min(natural, best), true);
+        // The per-face cap is already folded into best, so there is nothing left to
+        // clamp here. A support that is structural but somehow contributed nothing
+        // falls back to the block's own natural rather than to MIN_VALUE.
+        int assigned = initialValue(level, pos,
+                best == Integer.MIN_VALUE ? natural : best, true);
         reg.setEntry(pos, assigned);
         Chained d = chain(level, reg, support, pos, null, -1);
         return new Placed(pos.immutable(), natural, assigned,

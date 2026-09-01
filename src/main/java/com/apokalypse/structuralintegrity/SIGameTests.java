@@ -229,6 +229,14 @@ public final class SIGameTests {
     private static final double TEST_PUSH = 40.0;
 
     /**
+     * Well under what the default collapseTorque produces on a four-block cluster -
+     * 2.5 against a mass of 8 is a torque impulse of 20, and this body's moment of
+     * inertia about the tumble axis is a few kg m2, so several rad/s - and well over
+     * anything solver noise can put on that particular axis.
+     */
+    private static final double SPIN_THRESHOLD = 0.05;
+
+    /**
      * Does {@link SIForce#apply} actually reach sable's physics pipeline? A cluster
      * is dropped exactly as {@link #revertOnLanding} drops one, and the first tick
      * on which it exists as a sub-level it is shoved along +X. If the impulse lands,
@@ -320,6 +328,97 @@ public final class SIGameTests {
                 "impulse did not change the body's velocity: pushed=" + pushed.get()));
     }
 
+
+
+    /**
+     * The spec's rotational half: a piece that detaches through integrity loss must
+     * come out of {@link SIFall} already turning, and turning the right way.
+     *
+     * Nothing is applied by this test. The cluster is dropped exactly as
+     * {@link #forcePushesSubLevel} drops one and then only watched, so what is being
+     * measured is the shipped {@code collapseTorque} path inside
+     * {@code SIFall#assemble} rather than a call the test made itself.
+     *
+     * The assertion is on the component of the body's angular velocity ALONG its own
+     * tumble axis, not on the raw magnitude. A falling body picks up spin from ground
+     * contact too, and that spin has no reason to line up with the axis the collapse
+     * chose; requiring the sign and the direction to match is what separates the
+     * torque landing from the body simply bouncing.
+     */
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void collapseSpinsSubLevel(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        List<BlockPos> clusterWorld = new ArrayList<>();
+        for (BlockPos local : CLUSTER_LOCAL) {
+            helper.setBlock(local, Blocks.STONE);
+            BlockPos world = helper.absolutePos(local);
+            clusterWorld.add(world);
+            reg.set(world, Integrity.naturalOf(level, world, level.getBlockState(world)));
+        }
+        BlockPos queuedAt = clusterWorld.get(0);
+        SIFall.queueFall(level, queuedAt);
+
+        // Recomputed here from the same inputs assemble() will use, so the test knows
+        // which way the piece was told to roll without reading it back off the body.
+        Vec3 axis = SIForce.tumbleAxis(queuedAt, clusterWorld).normalize();
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] collapseSpinsSubLevel: cluster n={} anchor={} expected tumble axis=({},{},{})",
+                clusterWorld.size(), queuedAt, axis.x, axis.y, axis.z);
+
+        AtomicReference<ServerSubLevel> own = new AtomicReference<>();
+        AtomicBoolean seen = new AtomicBoolean(false);
+        AtomicBoolean spun = new AtomicBoolean(false);
+        int[] age = {-1};
+
+        helper.onEachTick(() -> {
+            ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
+            if (container == null) {
+                return;
+            }
+            if (own.get() == null) {
+                for (ServerSubLevel sub : container.getAllSubLevels()) {
+                    if (queuedAt.equals(SIFall.assembledAt(sub))) {
+                        own.set(sub);
+                        seen.set(true);
+                        var mt = sub.getMassTracker();
+                        var it = mt.getInertiaTensor();
+                        var ii = mt.getInverseInertiaTensor();
+                        StructuralIntegrity.LOGGER.info(
+                                "[SI-DIAG] mass={} com={} inertiaDiag=({},{},{}) invInertiaDiag=({},{},{})",
+                                mt.getMass(), mt.getCenterOfMass(),
+                                it.m00(), it.m11(), it.m22(),
+                                ii.m00(), ii.m11(), ii.m22());
+                        break;
+                    }
+                }
+            }
+            ServerSubLevel sub = own.get();
+            if (sub == null) {
+                return;
+            }
+            age[0]++;
+            // Pushed hard about +Y at two different ages, exactly as the linear
+            // diagnostic did: if a young body ignores torque but an older one takes
+            // it, the answer is timing; if neither lands, it is the body.
+            Vec3 w = SIForce.angularVelocityOf(sub);
+            Vec3 v = SIForce.linearVelocityOf(sub);
+            double along = w.dot(axis);
+            StructuralIntegrity.LOGGER.info(
+                    "[SI-TEST] age={} tick={} omega=({},{},{}) alongTumbleAxis={} v=({},{},{})",
+                    age[0], helper.getTick(), w.x, w.y, w.z, along, v.x, v.y, v.z);
+            if (along > SPIN_THRESHOLD) {
+                spun.set(true);
+            }
+        });
+
+        helper.runAtTickTime(30, () -> helper.assertTrue(seen.get(),
+                "no sub-level was assembled - fall/assemble did not fire"));
+
+        helper.succeedWhen(() -> helper.assertTrue(spun.get(),
+                "the assembled sub-level is not turning about its tumble axis: seen=" + seen.get()));
+    }
 
     /**
      * The other half of the force spec: a real detonation, through the real
@@ -457,6 +556,112 @@ public final class SIGameTests {
         helper.assertTrue(!reg.isAnchor(core), "sealed shell: the core is still ground");
 
         StructuralIntegrity.LOGGER.info("[SI-TEST] enclosedGroundIsDemoted: open={} closed={}", open, closed);
+        helper.succeed();
+    }
+
+    // ---- 0.6.3: what a sideways link costs, and what it hands over -----------
+    // Two legs of the same material off the same ground: one straight up, one
+    // straight out. Every claim the 0.6.3 rules make is a number here - what a
+    // pillar costs its base per block, what a ledge costs its innermost block per
+    // block, and what each new block is worth when it arrives.
+    private static final int PILLAR_X = 1;
+    private static final int PILLAR_Z = 1;
+    private static final int LEDGE_Z = 4;
+    private static final int LEDGE_Y = 6;
+    /**
+     * Blocks added after the founded first one, the same count in both legs.
+     *
+     * Three, not more, because the ledge must stay strictly inside the template. A
+     * block on the boundary has a neighbour in the surrounding world, that neighbour
+     * has never been touched, and untouched means ground - so the outermost block
+     * comes out founded at full strength with nothing charged, which is exactly what
+     * a four-step ledge did before this was pinned to the plot.
+     */
+    private static final int REACH_STEPS = 3;
+
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void sidewaysCostsDoubleAndInheritsHalf(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+        Block mat = Blocks.STONE;
+
+        // Ground, left untouched so every one of these reads as WbiReg.ANCHOR: it
+        // takes load without ever being charged. Both legs stand on the same rock.
+        for (int x = FLOOR_MIN; x <= FLOOR_MIN + 5; x++) {
+            helper.setBlock(new BlockPos(x, FLOOR_Y, PILLAR_Z), mat);
+            helper.setBlock(new BlockPos(x, FLOOR_Y, LEDGE_Z), mat);
+        }
+        // The cliff face the ledge springs from - untouched too, so also ground.
+        for (int y = FLOOR_Y + 1; y <= LEDGE_Y + 1; y++) {
+            helper.setBlock(new BlockPos(FLOOR_MIN, y, LEDGE_Z), mat);
+        }
+
+        int natural = Integrity.naturalOf(level, helper.absolutePos(BlockPos.ZERO),
+                mat.defaultBlockState());
+
+        // Leg one: straight up off the ground. Every block placed charges the base
+        // once, so the base is the first thing to run out.
+        BlockPos pillarBase = helper.absolutePos(new BlockPos(PILLAR_X, FLOOR_Y + 1, PILLAR_Z));
+        int pillarTip = 0;
+        for (int i = 0; i <= REACH_STEPS; i++) {
+            BlockPos local = new BlockPos(PILLAR_X, FLOOR_Y + 1 + i, PILLAR_Z);
+            helper.setBlock(local, mat);
+            Integrity.Placed placed = Integrity.place(level, reg, helper.absolutePos(local));
+            helper.assertTrue(placed != null, "pillar step " + i + " was not structural");
+            pillarTip = placed.assigned();
+            StructuralIntegrity.LOGGER.info("[SI-TEST] pillar step {} assigned={} base={} trace={}",
+                    i, placed.assigned(), reg.get(pillarBase), placed.trace());
+        }
+        int pillarBaseLeft = reg.get(pillarBase);
+
+        // Leg two: straight out off the same ground, high enough that there is
+        // nothing underneath it. Every block placed charges the innermost twice.
+        BlockPos ledgeInner = helper.absolutePos(new BlockPos(FLOOR_MIN + 1, LEDGE_Y, LEDGE_Z));
+        int ledgeTip = 0;
+        for (int i = 0; i <= REACH_STEPS; i++) {
+            BlockPos local = new BlockPos(FLOOR_MIN + 1 + i, LEDGE_Y, LEDGE_Z);
+            helper.setBlock(local, mat);
+            Integrity.Placed placed = Integrity.place(level, reg, helper.absolutePos(local));
+            helper.assertTrue(placed != null, "ledge step " + i + " was not structural");
+            // Only the first block out is allowed to touch ground. If a later one
+            // does, it has found the untouched world past the edge of the template
+            // and the leg is no longer measuring a ledge at all.
+            helper.assertTrue(i == 0 || !placed.onAnchor(),
+                    "ledge step " + i + " founded on ground - it has reached outside the plot");
+            ledgeTip = placed.assigned();
+            StructuralIntegrity.LOGGER.info("[SI-TEST] ledge step {} assigned={} inner={} trace={}",
+                    i, placed.assigned(), reg.get(ledgeInner), placed.trace());
+        }
+        int ledgeInnerLeft = reg.get(ledgeInner);
+
+        int pillarSpent = natural - pillarBaseLeft;
+        int ledgeSpent = natural - ledgeInnerLeft;
+        // The same numbers said in blocks: how far each leg gets before its first
+        // block runs out. This is the line the balance target is read off.
+        double pillarReach = 1.0 + (double) natural * REACH_STEPS / Math.max(1, pillarSpent);
+        double ledgeReach = 1.0 + (double) natural * REACH_STEPS / Math.max(1, ledgeSpent);
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] REACH natural={} over {} steps: pillar base {}->{} (spent {}), "
+                        + "ledge inner {}->{} (spent {}); arriving tip pillar={} ledge={}; "
+                        + "projected reach pillar={} ledge={} (ledge is {} of the pillar)",
+                natural, REACH_STEPS, natural, pillarBaseLeft, pillarSpent,
+                natural, ledgeInnerLeft, ledgeSpent, pillarTip, ledgeTip,
+                String.format(java.util.Locale.ROOT, "%.1f", pillarReach),
+                String.format(java.util.Locale.ROOT, "%.1f", ledgeReach),
+                String.format(java.util.Locale.ROOT, "%.2fx", ledgeReach / pillarReach));
+
+        helper.assertTrue(pillarSpent == REACH_STEPS,
+                "a pillar costs its base one point per block: expected " + REACH_STEPS
+                        + ", spent " + pillarSpent);
+        helper.assertTrue(ledgeSpent == 2 * REACH_STEPS,
+                "a ledge costs its innermost block two points per block: expected "
+                        + (2 * REACH_STEPS) + ", spent " + ledgeSpent);
+        helper.assertTrue(pillarTip == natural,
+                "a block set on TOP inherits in full: expected " + natural
+                        + ", got " + pillarTip);
+        helper.assertTrue(ledgeTip == natural / 2,
+                "a block set on the SIDE inherits half: expected " + (natural / 2)
+                        + ", got " + ledgeTip);
         helper.succeed();
     }
 

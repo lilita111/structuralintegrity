@@ -92,6 +92,19 @@ public final class SIConfig {
                     "sides; both false breaks neither - the chain stays spent but standing.")
             .define("breakStrongerBlock", false);
 
+    private static final ModConfigSpec.BooleanValue BREAK_SHOCKWAVE = B
+            .comment("true: a block breaking at failAt sends a shockwave through the whole",
+                    "connected structure - every tracked block in it takes -1, any type,",
+                    "stopping at ground and at the maxRegion cap. Blocks whose natural",
+                    "integrity is 1 conduct the wave but are not worn by it. A block the",
+                    "wave itself breaks does NOT emit a wave of its own - one wave per",
+                    "original break, no chain reaction. A break that detaches part of the",
+                    "structure into a sub-level emits no wave either - the falling piece",
+                    "carried the energy away; only a break that detaches nothing shocks.",
+                    "false: the pre-0.5.x splinter rule - a breaking block wears same-type",
+                    "neighbours only, cascading.")
+            .define("breakShockwave", true);
+
     private static final ModConfigSpec.BooleanValue BREAK_ON_INTEGRITY_LOSS = B
             .comment("true: a block scheduled to break at failAt is destroyed (the current",
                     "behaviour). false: the spent block stays in the world, pinned at failAt,",
@@ -142,6 +155,17 @@ public final class SIConfig {
                     "topple, not a launch. 0 disables it.")
             .defineInRange("collapseForce", 1.5, 0.0, 1024.0);
 
+    private static final ModConfigSpec.DoubleValue COLLAPSE_TORQUE = B
+            .comment("How hard a piece is set spinning the moment integrity loss detaches it,",
+                    "about the axis that makes its top lead in the direction it is already",
+                    "toppling. Deliberately larger than collapseForce: a piece that shears off",
+                    "a wall rolls away, it does not slide off flat.",
+                    "Not an angular speed. Rapier divides a torque impulse by the body's own",
+                    "moment of inertia, which grows faster than its mass, so one number spins a",
+                    "small lump briskly and a wide slab barely - which is the point. 0 disables",
+                    "it, independently of collapseForce.")
+            .defineInRange("collapseTorque", 2.5, 0.0, 1024.0);
+
     // ---- ground that stopped being ground ----------------------------------
 
     private static final ModConfigSpec.IntValue ENCLOSURE_CHECK_CHANCE = B
@@ -182,6 +206,33 @@ public final class SIConfig {
             .comment("Integrity at which a block fails outright. One above this is the",
                     "cracked state - loaded to its last point, still standing.")
             .defineInRange("failAt", Integrity.FAIL_AT, 0, 64);
+
+    private static final ModConfigSpec.DoubleValue SIDEWAYS_LOAD_MULTIPLIER = B
+            .comment("What a sideways link in the load path costs. Load handed straight",
+                    "down costs the plain amount; load handed sideways costs this much,",
+                    "and it is charged to whichever of the two blocks is the sturdier",
+                    "MATERIAL by natural integrity - so spanning forces a builder to reach",
+                    "for a better block for floors and roofs. Pillaring is therefore",
+                    "cheaper than ledging out: at 2.0 a player builds out about half as",
+                    "far as they can build up in the same material. 1.0 disables the rule.")
+            .defineInRange("sidewaysLoadMultiplier", 2.0, 1.0, 8.0);
+
+    private static final ModConfigSpec.BooleanValue SIDEWAYS_MULTIPLIER_ON_RESTORE = B
+            .comment("true: the sideways multiplier applies to integrity being GIVEN BACK",
+                    "as well as spent, so breaking a block returns exactly what placing it",
+                    "cost and a bridge edited over and over does not quietly erode.",
+                    "false: only debuffs are multiplied - the literal reading of 'sideways",
+                    "costs double', at the price of losing a point on every edit.")
+            .define("sidewaysMultiplierOnRestore", true);
+
+    private static final ModConfigSpec.DoubleValue SIDE_INHERITANCE_FACTOR = B
+            .comment("What fraction of its own natural integrity a block gets when it is",
+                    "placed against the SIDE of its support instead of on top of it. The",
+                    "cap is on the placed block's own material, not on the value it",
+                    "inherits, so a ledge is uniformly half-strength rather than halving",
+                    "again at every block out. Ground is exempt - founding on rock is free",
+                    "whichever face touches it. 1.0 disables the rule.")
+            .defineInRange("sideInheritanceFactor", 0.5, 0.0, 1.0);
 
     // ---- base integrity values --------------------------------------------
 
@@ -316,6 +367,22 @@ public final class SIConfig {
         return SPEC.isLoaded() ? MAX_LOAD_PATH.get() : Integrity.MAX_LOAD_PATH;
     }
 
+    public static double sidewaysLoadMultiplier() {
+        return SPEC.isLoaded() ? SIDEWAYS_LOAD_MULTIPLIER.get() : 2.0;
+    }
+
+    public static boolean sidewaysMultiplierOnRestore() {
+        return !SPEC.isLoaded() || SIDEWAYS_MULTIPLIER_ON_RESTORE.get();
+    }
+
+    public static double sideInheritanceFactor() {
+        return SPEC.isLoaded() ? SIDE_INHERITANCE_FACTOR.get() : 0.5;
+    }
+
+    public static boolean breakShockwave() {
+        return !SPEC.isLoaded() || BREAK_SHOCKWAVE.get();
+    }
+
     public static boolean breakOnIntegrityLoss() {
         return !SPEC.isLoaded() || BREAK_ON_INTEGRITY_LOSS.get();
     }
@@ -399,6 +466,10 @@ public final class SIConfig {
 
     public static double collapseForce() {
         return SPEC.isLoaded() ? COLLAPSE_FORCE.get() : 1.5;
+    }
+
+    public static double collapseTorque() {
+        return SPEC.isLoaded() ? COLLAPSE_TORQUE.get() : 2.5;
     }
 
     public static int enclosureCheckChance() {
