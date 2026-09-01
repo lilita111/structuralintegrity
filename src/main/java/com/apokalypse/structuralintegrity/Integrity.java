@@ -406,6 +406,9 @@ public final class Integrity {
         // material of the two, so the doubled cost was deferred onto it rather than
         // taken by the block that handed the load over.
         boolean owedSideways = false;
+        // Set when the block above decided, on its own iteration, to hand its point
+        // of the loss down to this one because this one is sturdier material.
+        boolean bracedIn = false;
         // The previous block's remaining deficit, for the weaker-material transfer.
         // -1 until the walk has applied to a block: the origin is the load, not
         // part of the chain, so its own wear is not inherited on the first step.
@@ -428,12 +431,12 @@ public final class Integrity {
 
             int natural = naturalOf(level, cur, level.getBlockState(cur));
             boolean stronger = prevNatural > 0 && natural > prevNatural;
-            // A brace needs something to brace: prevDeficit is only non-negative once
-            // the walk has actually charged a block, so this is false on the first
-            // step, where the block handing the load over is the origin and was never
-            // part of the chain. There the sturdier block absorbs and stops instead.
-            boolean brace = bracing && stronger && prevDeficit >= 0 && prev != null;
-            boolean rising = boundaryStops && stronger && !brace;
+            // Whether this crossing was braced is not asked here - the block above
+            // settled it on its own iteration, looking down, and left the answer in
+            // bracedIn. A braced crossing is not a boundary that stops the walk: the
+            // load carries on into the sturdier material, which is the whole point of
+            // bracing. An unbraced rise still absorbs and stops.
+            boolean rising = boundaryStops && stronger && !bracedIn;
             boolean falling = boundaryStops && prevNatural > 0 && natural < prevNatural
                     && prevDeficit >= 0;
             if (falling && prevDeficit == 0) {
@@ -446,6 +449,18 @@ public final class Integrity {
             // ask this early: cur is already in visited, and nothing between here
             // and the bottom of the loop moves a neighbour's value.
             BlockPos next = supportOf(level, reg, cur, visited);
+            int nextNatural = next == null ? 0
+                    : naturalOf(level, next, level.getBlockState(next));
+            // The brace, decided HERE - before this block is charged - rather than one
+            // step later once the walk has arrived on the sturdier block. That timing
+            // IS the fix. Charging a block and then handing a point back means the
+            // refund can subtract a point the charge never delivered: on a relax, a
+            // block already at its natural rating has its +1 clamped away to nothing
+            // and the refund still takes 1, so every place/break cycle grinds the wall
+            // down. Deciding first, the weaker block simply is not charged, so there is
+            // no half of a transfer left for a clamp to eat and the relax mirrors the
+            // charge by construction instead of by a guard enumerating clamp cases.
+            boolean bracesDown = bracing && next != null && nextNatural > natural;
             boolean owes = owedSideways;
             boolean owedNext = false;
             if (next != null && next.getY() == cur.getY()) {
@@ -455,7 +470,6 @@ public final class Integrity {
                 // load on - the uniform-material case, and the one the reach numbers
                 // are tuned against. A block already owing from the link it arrived
                 // over does not owe twice; one sideways link, one doubling.
-                int nextNatural = naturalOf(level, next, level.getBlockState(next));
                 if (natural >= nextNatural) {
                     owes = true;
                 } else {
@@ -474,38 +488,25 @@ public final class Integrity {
             int stored = storedAt(level, reg, cur);
 
             // The braced point: one point of the loss, in whichever direction the
-            // pass is going, moved off the weaker block that handed the load over
-            // and onto this sturdier one. Applied AFTER the sideways doubling on
-            // purpose - the doubling scales a load, this moves a fixed point
-            // between two blocks, and scaling it would stop the pair balancing.
+            // pass is going, moved off the weaker block and onto the sturdier one it
+            // rests on. Applied AFTER the sideways doubling on purpose - the doubling
+            // scales a load, this moves a fixed point between two blocks, and scaling
+            // it would stop the pair balancing.
+            //
+            // Exactly one movement per block per pass, and that is what makes the pair
+            // reversible. A block bracing down is not charged rather than charged and
+            // refunded, so no clamp can eat half a transfer. A block that is braced
+            // into from above AND braces down below receives one and passes one on,
+            // paying its own delta - so the strongest material in the run takes the
+            // concentrated loss, which is what a foundation is for.
             int step = delta < 0 ? -1 : 1;
-            int braced = 0;
-            int prevStored = 0;
-            if (brace && !dry) {
-                prevStored = storedAt(level, reg, prev);
-                int plainNow = clampToRange(stored + applied, delta, failAt, stored, natural);
-                int bracedNow = clampToRange(stored + applied + step, delta, failAt, stored,
-                        natural);
-                // Both halves or neither. If a clamp ate the sturdier block's extra
-                // point - already spent on a charge, already at natural on a relax -
-                // then no point moved and there is nothing to hand back, or a break
-                // against a healthy lintel would silently damage the wood above it.
-                boolean sturdierTakesIt = bracedNow - plainNow == step;
-                // And on a relax the refund is a -1, which must never be the thing
-                // that puts a row on the floor.
-                boolean weakerGivesIt = delta < 0 || prevStored - step > failAt;
-                if (sturdierTakesIt && weakerGivesIt) {
-                    braced = step;
-                } else {
-                    brace = false;
-                    trace.append("!BRACE-CLAMPED");
-                }
-            }
+            int carried = dry ? 0
+                    : (bracedIn ? step : 0) + (bracesDown ? -step : 0);
 
             // A block cannot be worse than spent, and cannot heal past what it is.
             // Below FAIL_AT the number is meaningless - already queued for
             // destruction - and it only makes the report harder to read.
-            int now = clampToRange(stored + applied + braced, delta, failAt, stored, natural);
+            int now = clampToRange(stored + applied + carried, delta, failAt, stored, natural);
             if (!dry && now != stored) {
                 reg.set(cur, now);
                 if (touched != null) {
@@ -527,21 +528,12 @@ public final class Integrity {
             if (owes) {
                 trace.append("(side").append(applied).append(')');
             }
-            if (braced != 0) {
-                // Hand the weaker block its point back. It cannot overshoot: on a
-                // charge this only undoes part of what this same pass just took, and
-                // on a relax the guard above proved the row can spare it.
-                int back = prevStored - braced;
-                reg.set(prev, back);
-                if (touched != null) {
-                    // Recorded as its own entry so restoreTouched, which negates each
-                    // amount in turn, gives back the net movement rather than the
-                    // gross one.
-                    touched.add(new Touched(prev, back - prevStored));
-                }
-                trace.append("(brace ").append(braced).append(" off ")
-                        .append(prev.getX()).append(',').append(prev.getY()).append(',')
-                        .append(prev.getZ()).append('=').append(back).append(')');
+            if (carried != 0) {
+                // No second write to report any more - each block moves once, so the
+                // trace says which direction this block's point went rather than
+                // naming a row that was edited twice in one pass.
+                trace.append(bracedIn ? "(braced-in " : "(braces-down ")
+                        .append(carried).append(')');
             }
 
             if (delta < 0 && now <= failAt) {
@@ -569,6 +561,7 @@ public final class Integrity {
             int entry = reg.entryOf(cur);
             prevDeficit = Math.max(0, (entry >= 0 ? Math.min(entry, natural) : natural) - now);
             owedSideways = owedNext;
+            bracedIn = bracesDown;
             prevNatural = natural;
             prev = cur;
             cur = next;
@@ -916,14 +909,16 @@ public final class Integrity {
      * a building could never be worn down at all.
      *
      * What it computes, in order. First the block's own natural limit, because
-     * nothing here can exceed it. Then the same six-neighbour scan {@link #place}
-     * runs: a neighbour reading {@link WbiReg#ANCHOR} is ground and settles it
-     * outright at full natural, and otherwise the strongest neighbour wins, capped
-     * at {@code natural} through a vertical face and at {@link #sideInheritanceCap}
-     * through a horizontal one. Then the row moves to the better of what it holds
-     * and what that scan says - never down, because a repair that could damage is
-     * not a repair, and a block standing stronger than its neighbours warrant has
-     * earned that from something this scan cannot see.
+     * nothing here can exceed it. Then {@link #supportOf} - the same routine
+     * {@link #place} and {@link #chain} ask - for the one neighbour that is holding
+     * this block up. A support reading {@link WbiReg#ANCHOR} is ground and settles
+     * it outright at full natural; any other support hands over what it currently
+     * holds, capped at {@code natural} when it is reached through a vertical face
+     * and at {@link #sideInheritanceCap} through a horizontal one; and no support at
+     * all hands over nothing. Then the row moves to the better of what it holds and
+     * what that says - never down, because a repair that could damage is not a
+     * repair, and a block standing stronger than its support warrants has earned
+     * that from something this pass cannot see.
      *
      * The two deliberate differences from {@link #place}, both of which are the
      * whole design:
@@ -939,11 +934,13 @@ public final class Integrity {
      * every click would turn any tool into an integrity fountain: click a stone
      * block in a stone wall repeatedly and it would climb without limit.
      *
-     * The consequence for play, which falls out rather than being written: a block
-     * can only be repaired as far as its best neighbour CURRENTLY stands, so a
-     * damaged tower cannot be fixed from the top. Repair it at the bottom, where it
-     * meets ground, and each block up the tower then has something sound underneath
-     * to inherit from. Mending a building is a walk up it.
+     * The consequence for play, which falls out of asking supportOf rather than
+     * being written: a block can only be repaired as far as the thing HOLDING IT UP
+     * currently stands, so a damaged tower cannot be fixed from the top - the block
+     * above is not what a block rests on, and now it is not what a block inherits
+     * from either. Repair the tower at the bottom, where it meets ground, and each
+     * block up it then has something sound underneath to inherit from. Mending a
+     * building is a walk up it.
      *
      * @return null when the position holds nothing structural; otherwise a report,
      *         with {@code changed} false when there was nothing to give back
@@ -964,28 +961,41 @@ public final class Integrity {
 
         int before = reg.get(pos);
 
+        // One question, asked of the one routine that answers it everywhere else.
+        // The six-way scan this replaces gave UP the same full-natural cap as DOWN,
+        // so a block inherited from the block above it as freely as from the one
+        // below and a damaged tower healed downwards from its tip. Capping UP would
+        // have fixed that symptom and left a second, private definition of what
+        // holds a block up sitting next to the real one, free to drift from it.
+        BlockPos support = supportOf(level, reg, pos, null);
+
         boolean founded = false;
         int best = Integer.MIN_VALUE;
-        int sideCap = sideInheritanceCap(natural);
-        for (Direction dir : DIRS) {
-            BlockPos n = pos.relative(dir).immutable();
-            if (!isStructural(level, n, null)) {
-                continue;
-            }
-            int at = peekAt(level, reg, n);
+        if (support != null) {
+            int at = peekAt(level, reg, support);
             if (at == WbiReg.ANCHOR) {
                 founded = true;
-                break;
-            }
-            int cap = dir.getAxis().isHorizontal() ? sideCap : natural;
-            int candidate = Math.min(cap, at);
-            if (candidate > best) {
-                best = candidate;
+            } else {
+                // Which face the support was reached through still decides the cap.
+                // supportOf answers WHICH neighbour carries the load; this answers
+                // how much of its strength travels through that particular face, and
+                // those are separate questions with separate answers.
+                int cap = support.getY() == pos.getY()
+                        ? sideInheritanceCap(natural)
+                        : natural;
+                best = Math.min(cap, at);
             }
         }
 
-        int fresh = founded || best == Integer.MIN_VALUE
-                ? natural
+        // Three outcomes, where the old form had two. Ground repairs to full natural.
+        // A tracked support repairs as far as that support currently stands. Nothing
+        // holding the block up repairs to nothing - the old form folded that case in
+        // with ground and granted full natural, which under a six-way scan almost
+        // never came up and under supportOf is ordinary: every neighbour spent, or
+        // the supports mined out. Left alone it would make clearing the ground around
+        // a block the cheapest repair in the mod.
+        int fresh = founded ? natural
+                : best == Integer.MIN_VALUE ? before
                 : Math.min(best, natural);
         int after = Math.max(before, fresh);
         if (after != before) {

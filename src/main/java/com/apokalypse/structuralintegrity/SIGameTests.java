@@ -1488,6 +1488,8 @@ public final class SIGameTests {
                         + "place/break no longer cancels and every cycle grinds the foundation");
         helper.assertValueEqual(reg.get(lower), lowerBefore,
                 "a relax did not leave the plank where it started");
+
+        helper.succeed();
     }
 
     // ---- 0.7.6 -------------------------------------------------------------
@@ -1576,5 +1578,7 @@ public final class SIGameTests {
 
         // And put it back, so the test leaves the structure as it found it.
         Integrity.chain(level, reg, top, null, null, 1);
+
+        helper.succeed();
     }
 }

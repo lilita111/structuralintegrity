@@ -7,7 +7,7 @@
     "#minecraft:doors":          { "integrity": 10 },
     "#minecraft:trapdoors":      { "integrity": 10 },
 
-    "#minecraft:logs":             { "integrity": 20, "never_anchor": true },
+    "#minecraft:logs":             { "integrity": 28, "never_anchor": true },
     "#minecraft:planks":           { "integrity": 20, "never_anchor": true },
     "#minecraft:wooden_slabs":     { "integrity": 12, "never_anchor": true },
     "#minecraft:wooden_stairs":    { "integrity": 14, "never_anchor": true },
