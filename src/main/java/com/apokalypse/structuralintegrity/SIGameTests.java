@@ -1207,4 +1207,196 @@ public final class SIGameTests {
                 restored.count(), restored.skipped());
         helper.succeed();
     }
+
+    // ---- 0.7.4 -------------------------------------------------------------
+
+    /**
+     * The wrench repair, and the one line that makes it a repair rather than a
+     * second placement.
+     *
+     * The damage being repaired is real and permanent without this. A stack of four
+     * blocks is placed from the ground up, and each placement charges everything
+     * below it, so the bottom block ends three points down and the one above it two.
+     * Then the top block detaches the way {@link SIFall} detaches one - block gone,
+     * row cleared - and every point it charged into the stack stays charged. The
+     * stack is now carrying a block that is not there, and nothing in the mod ever
+     * gives that back.
+     *
+     * The repair walks up, because it can only walk up: a block comes back no further
+     * than its best neighbour currently stands, so the bottom block - which touches
+     * ground and therefore re-derives at full natural - has to be mended before the
+     * one above it has anything sound to inherit from. That order is the mechanic,
+     * not an implementation detail, and it is what stops one click from healing a
+     * tower.
+     *
+     * The assertion that matters is the last one. {@link Integrity#place} ends with
+     * a {@code chain(-1)} that charges the support for agreeing to carry a new block;
+     * {@link Integrity#recompute} deliberately omits it, and that omission is the
+     * whole difference between the two methods. If it were ever put back - by a
+     * refactor that "simplified" recompute into a call to place, say - every other
+     * test here would still pass while repairing a wall quietly ground its own
+     * foundation away, worst of all for a player patching from the top down.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void wrenchRepairRestoresWithoutChargingTheSupport(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+        Block mat = Blocks.STONE;
+
+        // Ground for the stack to stand on. Untracked, so it reads as ANCHOR.
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y, PILLAR_Z), mat);
+
+        BlockPos[] stack = new BlockPos[4];
+        for (int i = 0; i < stack.length; i++) {
+            BlockPos local = new BlockPos(PILLAR_X, FLOOR_Y + 1 + i, PILLAR_Z);
+            helper.setBlock(local, mat);
+            stack[i] = helper.absolutePos(local);
+            Integrity.place(level, reg, stack[i]);
+        }
+        int natural = Integrity.naturalOf(level, stack[0], level.getBlockState(stack[0]));
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] WRENCH built: natural={} rows={},{},{},{}",
+                natural, reg.get(stack[0]), reg.get(stack[1]), reg.get(stack[2]), reg.get(stack[3]));
+        helper.assertTrue(reg.get(stack[0]) < natural,
+                "the base was never charged by the blocks above it - nothing to repair");
+
+        // The top block shears off, exactly as SIFall does it: gone from the world,
+        // row cleared. Its charge stays behind in everything underneath.
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y + 4, PILLAR_Z), Blocks.AIR);
+        reg.clear(stack[3]);
+        int baseAfterLoss = reg.get(stack[0]);
+        int secondAfterLoss = reg.get(stack[1]);
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] WRENCH after the top block left: base={} second={} third={} (natural {})",
+                baseAfterLoss, secondAfterLoss, reg.get(stack[2]), natural);
+
+        // Repairing the SECOND block first must do nothing: its best neighbour is the
+        // still-damaged base, and a block cannot come back further than that.
+        Integrity.Recomputed early = Integrity.recompute(level, reg, stack[1]);
+        StructuralIntegrity.LOGGER.info("[SI-TEST] WRENCH top-down attempt: {}", early);
+        helper.assertTrue(early != null && !early.changed(),
+                "repairing above a damaged block healed it anyway - the inheritance rule is gone");
+
+        // Bottom first. The base touches ground, so it re-derives at full natural.
+        Integrity.Recomputed atBase = Integrity.recompute(level, reg, stack[0]);
+        StructuralIntegrity.LOGGER.info("[SI-TEST] WRENCH base repair: {}", atBase);
+        helper.assertTrue(atBase != null && atBase.founded(),
+                "the base does not see the ground it is standing on");
+        helper.assertValueEqual(reg.get(stack[0]), natural, "base integrity after repair");
+
+        // Now the second block has something sound underneath and can follow.
+        int baseBeforeSecond = reg.get(stack[0]);
+        Integrity.Recomputed atSecond = Integrity.recompute(level, reg, stack[1]);
+        StructuralIntegrity.LOGGER.info("[SI-TEST] WRENCH second repair: {}", atSecond);
+        helper.assertTrue(atSecond != null && atSecond.changed(),
+                "the second block did not recover once its support was sound");
+        helper.assertValueEqual(reg.get(stack[1]), natural, "second block integrity after repair");
+
+        // The assertion this test exists for.
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] WRENCH support check: base was {} before repairing the block above it, now {}",
+                baseBeforeSecond, reg.get(stack[0]));
+        helper.assertValueEqual(reg.get(stack[0]), baseBeforeSecond,
+                "repairing a block charged the block underneath it - recompute is calling chain()");
+        helper.succeed();
+    }
+
+    /**
+     * A player's impact scales with how fast they were actually travelling.
+     *
+     * Two things, on one real sable body. First that the impulse is linear in the
+     * player's world motion - twice the arrival speed is twice the impulse, and no
+     * motion is no impulse - which is the claim {@code playerImpactMass} being a flat
+     * number makes easy to misread as "every landing hits the same". It is the mass
+     * that is constant, correctly, because it is the player's weight; the speed is
+     * whatever they arrived at.
+     *
+     * Second that a strike actually reaches the physics engine, asked of the engine
+     * through {@link SIForce#linearVelocityOf} rather than read off
+     * {@code latestLinearVelocity} - that mirror field reads a flat zero for these
+     * bodies for their whole life, which is what once made a working push report
+     * itself as a failure.
+     */
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void playerImpactScalesWithArrivalSpeed(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        List<BlockPos> clusterWorld = new ArrayList<>();
+        for (BlockPos local : CLUSTER_LOCAL) {
+            helper.setBlock(local, Blocks.STONE);
+            BlockPos world = helper.absolutePos(local);
+            clusterWorld.add(world);
+            reg.set(world, Integrity.naturalOf(level, world, level.getBlockState(world)));
+        }
+        SIFall.queueFall(level, clusterWorld.get(0));
+        BlockPos queuedAt = clusterWorld.get(0);
+
+        AtomicReference<ServerSubLevel> own = new AtomicReference<>();
+        AtomicBoolean scales = new AtomicBoolean(false);
+        AtomicBoolean struck = new AtomicBoolean(false);
+        AtomicBoolean moved = new AtomicBoolean(false);
+        double[] before = {0.0};
+
+        helper.onEachTick(() -> {
+            ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
+            if (container == null) {
+                return;
+            }
+            if (own.get() == null) {
+                // Matched on the anchor this test queued, never on a spatial margin:
+                // gametests are tiled a few blocks apart in one shared level and any
+                // generous margin reaches into a neighbour's structure.
+                for (ServerSubLevel sub : container.getAllSubLevels()) {
+                    if (queuedAt.equals(SIFall.assembledAt(sub))) {
+                        own.set(sub);
+                        break;
+                    }
+                }
+            }
+            ServerSubLevel sub = own.get();
+            if (sub == null) {
+                return;
+            }
+
+            if (!scales.get()) {
+                Vec3 slow = new Vec3(0.0, -0.42, 0.0);
+                Vec3 fast = slow.scale(2.0);
+                double one = SIPlayerImpact.impulseOf(sub, slow).length();
+                double two = SIPlayerImpact.impulseOf(sub, fast).length();
+                double none = SIPlayerImpact.impulseOf(sub, Vec3.ZERO).length();
+                StructuralIntegrity.LOGGER.info(
+                        "[SI-TEST] IMPACT scaling: |slow|={} |fast|={} ratio={} |still|={} mass={}",
+                        one, two, one > 0 ? two / one : Double.NaN, none,
+                        SIConfig.playerImpactMass());
+                helper.assertTrue(one > 0.0, "a landing at 0.42 b/t produced no impulse at all");
+                helper.assertTrue(Math.abs(two - 2.0 * one) < 1.0e-6,
+                        "impulse is not linear in arrival speed: " + one + " then " + two);
+                helper.assertTrue(none < 1.0e-9,
+                        "a player with no motion still delivered an impulse of " + none);
+                scales.set(true);
+            }
+
+            if (!struck.get()) {
+                before[0] = SIForce.linearVelocityOf(sub).y;
+                // A hard landing straight down, on the body's own centre so the whole
+                // impulse shows up as linear velocity rather than spin.
+                SIPlayerImpact.strike(sub, Vec3.ZERO, new Vec3(0.0, -1.5, 0.0),
+                        "TEST-LAND", null, 1.5);
+                struck.set(true);
+                return;
+            }
+            double after = SIForce.linearVelocityOf(sub).y;
+            StructuralIntegrity.LOGGER.info("[SI-TEST] IMPACT vy {} -> {}", before[0], after);
+            if (after < before[0] - 0.05) {
+                moved.set(true);
+            }
+        });
+
+        helper.runAtTickTime(40, () -> helper.assertTrue(scales.get(),
+                "no sub-level was assembled - fall/assemble did not fire"));
+
+        helper.succeedWhen(() -> helper.assertTrue(moved.get(),
+                "a player landing on the body did not change its velocity: struck=" + struck.get()));
+    }
 }

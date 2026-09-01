@@ -288,18 +288,21 @@ public final class SIConfig {
 
     // ---- sable ------------------------------------------------------------
 
-    private static final ModConfigSpec.BooleanValue FIX_SUB_LEVEL_SKY_LIGHT = B
-            .comment("Whether to force sky light on for freshly created sable sub-level chunks.",
-                    "Sable builds a plot chunk with its light-correct flag cleared and then asks",
-                    "the light engine to honour that flag, so a sub-level that has just been",
-                    "assembled is created with sky light DISABLED and ships all-zero sky data to",
-                    "every client tracking it - which is why a falling roof renders under a",
-                    "permanent night no matter what time it actually is. Sable's own reload path",
-                    "does the opposite: a saved sub-level restores its flag from NBT as true",
-                    "before lighting, so reloaded pieces light correctly and only fresh ones are",
-                    "dark. This makes a fresh plot behave the way a reloaded one already does.",
-                    "Only has any effect with sable installed.")
-            .define("fixSubLevelSkyLight", true);
+    private static final ModConfigSpec.BooleanValue REPORT_SUB_LEVEL_LIGHT = B
+            .comment("Whether to report the light state of every freshly lit sable plot chunk to",
+                    "the log. This replaces fixSubLevelSkyLight, which forced sky light on and",
+                    "was proven in 0.7.4 to change nothing: sable's lightChunk calls",
+                    "propagateLightSources immediately after the setLightEnabled that key was",
+                    "overriding, and vanilla's BlockLightEngine.propagateLightSources and",
+                    "SkyLightEngine.propagateLightSources BOTH re-enable light unconditionally as",
+                    "their very first statement, so the flag was already being undone two lines",
+                    "later. Sub-levels are still dark, so the cause is somewhere else, and this",
+                    "prints what the plot's own light engine actually holds - per section:",
+                    "whether light is on, whether a sky layer exists, and whether that layer is",
+                    "all zero - so the next in-game run says where the darkness enters instead",
+                    "of another reading of the source guessing at it. Only has any effect with",
+                    "sable installed. Log noise: thinned after the first few chunks.")
+            .define("reportSubLevelLight", true);
 
     // ---- ground that stopped being ground ----------------------------------
 
@@ -437,6 +440,42 @@ public final class SIConfig {
             .comment("How long after coming to rest a sub-level stays eligible to revert.")
             .defineInRange("restCheckTicks", 20, 1, 1200);
 
+    private static final ModConfigSpec.IntValue SNAP_ASSIST_TICKS = B
+            .comment("How long a sub-level must sit completely still, in ticks, before it gets a",
+                    "second and more forgiving chance to turn back into blocks. 0 turns the",
+                    "second chance off entirely.",
+                    "Why there is a second chance at all: the first check runs in the",
+                    "restCheckTicks window right after the body stops, and it demands the body",
+                    "have come to rest already square with the world - within",
+                    "snapOrientationEpsilon of a quarter turn and snapPositionEpsilon of a block",
+                    "centre. Nothing whatsoever nudges a resting body toward those conditions,",
+                    "so whether a piece of rubble becomes blocks again is decided by where the",
+                    "physics happened to drop it. In practice most pieces miss, and a world",
+                    "slowly fills with debris that is permanently a physics body.",
+                    "This is not a nudge either - the revert has always placed blocks at the",
+                    "NEAREST block centre and the NEAREST quarter turn, so the epsilons were",
+                    "only ever asking 'is rounding honest here'. After three seconds of a body",
+                    "not moving at all, rounding a little further is honest.")
+            .defineInRange("snapAssistTicks", 60, 0, 12000);
+
+    private static final ModConfigSpec.DoubleValue SNAP_ASSIST_POSITION_EPSILON = B
+            .comment("How far off a block centre a long-rested sub-level may be and still be",
+                    "rounded onto the grid, in blocks. Applies only after snapAssistTicks.",
+                    "0.5 would accept anything at all, since nothing can be further than half a",
+                    "block from the nearest centre; the default leaves a margin so a piece",
+                    "wedged exactly between two positions is still left where it is.")
+            .defineInRange("snapAssistPositionEpsilon", 0.30, 0.001, 0.5);
+
+    private static final ModConfigSpec.DoubleValue SNAP_ASSIST_ORIENTATION_EPSILON = B
+            .comment("How far off a quarter turn a long-rested sub-level may be and still be",
+                    "rounded onto the grid. Applies only after snapAssistTicks. Measured as the",
+                    "distance between unit vectors, so 0.45 is about 26 degrees of yaw.",
+                    "The up-vector test is NOT loosened by this: a body lying on its side or",
+                    "tipped onto a corner still never reverts, however long it rests, because a",
+                    "vanilla block state cannot express that and rounding it away would stand a",
+                    "toppled wall back up.")
+            .defineInRange("snapAssistOrientationEpsilon", 0.45, 0.001, 1.0);
+
     private static final ModConfigSpec.BooleanValue SUBLEVELS_FLOAT_WHEN_RECONVERTED = B
             .comment("Whether a landing is allowed to mint new ground.",
                     "false, the default since 0.7.0: it never is. Every block a landed",
@@ -453,6 +492,51 @@ public final class SIConfig {
                     "gametest suite watched it happen: 4/4 landed blocks touch the standing",
                     "world, so every block of that reverted piece became ground.")
             .define("subLevelsFloatWhenReconverted", false);
+
+
+    // ---- repairing by hand -------------------------------------------------
+
+    private static final ModConfigSpec.BooleanValue WRENCH_REPAIR_ENABLED = B
+            .comment("Whether a block's integrity can be recalculated by right-clicking it with a",
+                    "tool. This exists because damage outlives its cause. When a piece of a",
+                    "building shears off and becomes a sub-level, its rows are cleared and it",
+                    "flies away, but every point it charged into the wall it was hanging from",
+                    "stays charged - the wall is holding a load that is no longer there. Nothing",
+                    "in the mod ever gives that back, so a building that has survived one",
+                    "collapse is permanently weaker than the same building freshly built. This",
+                    "makes the repair a deliberate act with a tool in hand rather than something",
+                    "the world quietly does for the player.")
+            .define("wrenchRepairEnabled", true);
+
+    private static final ModConfigSpec.ConfigValue<String> WRENCH_REPAIR_ITEM = B
+            .comment("The registry id of the item that repairs. create:wrench by default,",
+                    "because Create's wrench does nothing at all when right-clicked on an",
+                    "ordinary block - it only acts on its own IWrenchable machines - so the",
+                    "interaction is free and the tool already means 'adjust the building' to",
+                    "anyone playing Create. The mod does not depend on Create: the item is",
+                    "matched by id, so with Create absent this simply never fires, and any other",
+                    "item can be named here instead.")
+            .define("wrenchRepairItem", "create:wrench");
+
+    private static final ModConfigSpec.BooleanValue WRENCH_REPAIR_REQUIRES_SNEAK = B
+            .comment("Whether the repair needs sneak-right-click rather than plain right-click.",
+                    "Off by default. Create's wrench uses plain right-click to rotate its own",
+                    "machines and sneak-right-click both to pick them up and to pick up anything",
+                    "in the create:wrench_pickup tag, so BOTH clicks are already taken on the",
+                    "blocks Create cares about - the repair skips those blocks either way and",
+                    "never overrides Create. This is here for a pack that binds the repair to a",
+                    "tool with its own plain-click behaviour.")
+            .define("wrenchRepairRequiresSneak", false);
+
+    private static final ModConfigSpec.IntValue WRENCH_REPAIR_RADIUS = B
+            .comment("How far around the clicked block a single repair reaches, in blocks.",
+                    "0, the default: exactly the block clicked. Higher values repair a cube of",
+                    "that radius, lowest blocks first, which matters - a block can only be",
+                    "repaired as far as its best neighbour currently stands, so a wall mends",
+                    "from the bottom up and one click on a tall one at radius 4 does what four",
+                    "careful clicks up the same wall would. Raising this makes repair cheap:",
+                    "the cost of mending a building is meant to be the walking.")
+            .defineInRange("wrenchRepairRadius", 0, 0, 8);
 
     public static final ModConfigSpec SPEC = B.build();
 
@@ -519,7 +603,7 @@ public final class SIConfig {
     }
 
     public static int explosionShockwaveDelta() {
-        return SPEC.isLoaded() ? EXPLOSION_SHOCKWAVE_DELTA.get() : 0;
+        return SPEC.isLoaded() ? EXPLOSION_SHOCKWAVE_DELTA.get() : 8;
     }
 
     public static boolean materialBoundaryStops() {
@@ -637,7 +721,7 @@ public final class SIConfig {
     }
 
     public static double collapseTorque() {
-        return SPEC.isLoaded() ? COLLAPSE_TORQUE.get() : 2.5;
+        return SPEC.isLoaded() ? COLLAPSE_TORQUE.get() : 0.05;
     }
 
     public static boolean playerImpactEnabled() {
@@ -668,8 +752,8 @@ public final class SIConfig {
         return SPEC.isLoaded() ? JUMP_SHOCK_MIN_FALL_DISTANCE.get() : 0.5;
     }
 
-    public static boolean fixSubLevelSkyLight() {
-        return !SPEC.isLoaded() || FIX_SUB_LEVEL_SKY_LIGHT.get();
+    public static boolean reportSubLevelLight() {
+        return !SPEC.isLoaded() || REPORT_SUB_LEVEL_LIGHT.get();
     }
 
     public static int enclosureCheckChance() {
@@ -683,5 +767,33 @@ public final class SIConfig {
     public static Set<Block> enclosureGroundBlocks() {
         return SPEC.isLoaded() ? resolve(ENCLOSURE_GROUND_BLOCKS.get())
                 : Set.of(net.minecraft.world.level.block.Blocks.DEEPSLATE);
+    }
+
+    public static int snapAssistTicks() {
+        return SPEC.isLoaded() ? SNAP_ASSIST_TICKS.get() : 60;
+    }
+
+    public static double snapAssistPositionEpsilon() {
+        return SPEC.isLoaded() ? SNAP_ASSIST_POSITION_EPSILON.get() : 0.30;
+    }
+
+    public static double snapAssistOrientationEpsilon() {
+        return SPEC.isLoaded() ? SNAP_ASSIST_ORIENTATION_EPSILON.get() : 0.45;
+    }
+
+    public static boolean wrenchRepairEnabled() {
+        return !SPEC.isLoaded() || WRENCH_REPAIR_ENABLED.get();
+    }
+
+    public static String wrenchRepairItem() {
+        return SPEC.isLoaded() ? WRENCH_REPAIR_ITEM.get() : "create:wrench";
+    }
+
+    public static boolean wrenchRepairRequiresSneak() {
+        return SPEC.isLoaded() && WRENCH_REPAIR_REQUIRES_SNEAK.get();
+    }
+
+    public static int wrenchRepairRadius() {
+        return SPEC.isLoaded() ? WRENCH_REPAIR_RADIUS.get() : 0;
     }
 }

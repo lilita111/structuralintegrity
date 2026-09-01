@@ -736,6 +736,117 @@ public final class Integrity {
     }
 
     /**
+     * What a {@link #recompute} did, or would have done.
+     *
+     * @param natural  the block's own material limit
+     * @param before   the row as it stood
+     * @param fresh    what the same block would be assigned if it were placed here now
+     * @param after    the row as it now stands - {@code max(before, fresh)}
+     * @param founded  true when a neighbour is ground, so the block re-derives at full natural
+     * @param best     the strongest connection found, or {@link WbiReg#ANCHOR} when founded
+     */
+    public record Recomputed(BlockPos pos, int natural, int before, int fresh, int after,
+                             boolean founded, int best, boolean changed) {}
+
+    /**
+     * Re-derive a block's integrity from the blocks around it as they stand now,
+     * and charge nobody for it.
+     *
+     * Why anything needs repairing at all. When part of a building shears off and
+     * becomes a sub-level, {@link SIFall} clears the rows of the blocks that left,
+     * and they fly away. Every point those blocks charged into the wall they were
+     * hanging from when they were PLACED stays charged - {@link #place} spends it
+     * through {@link #chain} at build time, and nothing anywhere gives it back. So
+     * the wall is left carrying a load that is no longer there, permanently weaker
+     * than the same wall freshly built, and the next thing built on it inherits
+     * that weakness. Doing this automatically the moment a piece detaches was the
+     * alternative and is worse: a collapse would silently repair its own damage and
+     * a building could never be worn down at all.
+     *
+     * What it computes, in order. First the block's own natural limit, because
+     * nothing here can exceed it. Then the same six-neighbour scan {@link #place}
+     * runs: a neighbour reading {@link WbiReg#ANCHOR} is ground and settles it
+     * outright at full natural, and otherwise the strongest neighbour wins, capped
+     * at {@code natural} through a vertical face and at {@link #sideInheritanceCap}
+     * through a horizontal one. Then the row moves to the better of what it holds
+     * and what that scan says - never down, because a repair that could damage is
+     * not a repair, and a block standing stronger than its neighbours warrant has
+     * earned that from something this scan cannot see.
+     *
+     * The two deliberate differences from {@link #place}, both of which are the
+     * whole design:
+     *
+     * <p>No {@link #chain} call. A placement charges the support underneath for
+     * agreeing to carry a new block; that charge was paid once, when the block was
+     * first placed, and it is still on the books. Charging it again would mean
+     * repairing a block damages what it stands on, and a player patching a wall
+     * from the top down would grind its foundation to nothing.
+     *
+     * <p>No {@link #initialValue} call, so no clump grant. The grant is a one-time
+     * payment made at row creation and worn away thereafter, and re-paying it on
+     * every click would turn any tool into an integrity fountain: click a stone
+     * block in a stone wall repeatedly and it would climb without limit.
+     *
+     * The consequence for play, which falls out rather than being written: a block
+     * can only be repaired as far as its best neighbour CURRENTLY stands, so a
+     * damaged tower cannot be fixed from the top. Repair it at the bottom, where it
+     * meets ground, and each block up the tower then has something sound underneath
+     * to inherit from. Mending a building is a walk up it.
+     *
+     * @return null when the position holds nothing structural; otherwise a report,
+     *         with {@code changed} false when there was nothing to give back
+     */
+    @Nullable
+    public static Recomputed recompute(ServerLevel level, WbiReg reg, BlockPos pos) {
+        if (!isStructural(level, pos, null)) {
+            return null;
+        }
+        int natural = naturalOf(level, pos, level.getBlockState(pos));
+
+        // Ground repairs to nothing because ground was never damaged: an untouched
+        // position has no row, and a row-less position reads as ANCHOR forever.
+        if (isAnchor(level, reg, pos)) {
+            return new Recomputed(pos.immutable(), natural, WbiReg.ANCHOR, WbiReg.ANCHOR,
+                    WbiReg.ANCHOR, true, WbiReg.ANCHOR, false);
+        }
+
+        int before = reg.get(pos);
+
+        boolean founded = false;
+        int best = Integer.MIN_VALUE;
+        int sideCap = sideInheritanceCap(natural);
+        for (Direction dir : DIRS) {
+            BlockPos n = pos.relative(dir).immutable();
+            if (!isStructural(level, n, null)) {
+                continue;
+            }
+            int at = peekAt(level, reg, n);
+            if (at == WbiReg.ANCHOR) {
+                founded = true;
+                break;
+            }
+            int cap = dir.getAxis().isHorizontal() ? sideCap : natural;
+            int candidate = Math.min(cap, at);
+            if (candidate > best) {
+                best = candidate;
+            }
+        }
+
+        int fresh = founded || best == Integer.MIN_VALUE
+                ? natural
+                : Math.min(best, natural);
+        int after = Math.max(before, fresh);
+        if (after != before) {
+            // set, not setEntry: the row moves, but the value it ENTERED tracking
+            // with is history and chain() still measures its sideways deficit
+            // against that. A repair is not a second birth.
+            reg.set(pos, after);
+        }
+        return new Recomputed(pos.immutable(), natural, before, fresh, after,
+                founded, founded ? WbiReg.ANCHOR : best, after != before);
+    }
+
+    /**
      * Mining does not damage integrity, but it does disturb the ground: the mined
      * block's structural neighbours stop being anchors and enter wbireg at their
      * natural value - tracked, undamaged, no longer ground.

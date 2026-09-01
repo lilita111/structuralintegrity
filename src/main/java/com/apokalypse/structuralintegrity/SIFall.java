@@ -652,11 +652,20 @@ public final class SIFall {
                 continue;
             }
 
-            if (REST_TICKS.merge(subLevel, 1, Integer::sum) > SIConfig.restCheckTicks()) {
+            int rest = REST_TICKS.merge(subLevel, 1, Integer::sum);
+            if (rest <= SIConfig.restCheckTicks()) {
+                tryRevert(level, reg, subLevel, false);
                 continue;
             }
 
-            tryRevert(level, reg, subLevel);
+            // Second chance. Fires on exactly one tick - the counter climbs by one
+            // per pass and is dropped the moment the body moves again, so a body
+            // that is nudged and settles somewhere new gets a fresh window and a
+            // fresh assist rather than an assist per tick forever.
+            int assist = SIConfig.snapAssistTicks();
+            if (assist > 0 && rest == SIConfig.restCheckTicks() + assist) {
+                tryRevert(level, reg, subLevel, true);
+            }
         }
     }
 
@@ -681,22 +690,90 @@ public final class SIFall {
         return worldAnchor;
     }
 
-    private static void tryRevert(ServerLevel level, WbiReg reg, ServerSubLevel subLevel) {
+    /**
+     * Turn a sub-level back into blocks if it is close enough to the grid to round.
+     *
+     * @param lenient the second pass, run once after {@code snapAssistTicks} of the
+     *                body not moving at all. It widens the position and yaw
+     *                tolerances only. It does NOT widen the up-vector test and it
+     *                does not touch the body: {@link #revert} has always placed
+     *                blocks at the nearest block centre and the nearest quarter
+     *                turn, so what the tolerances decide is whether that rounding
+     *                is honest, and after three seconds of stillness a wider
+     *                rounding is still honest.
+     */
+    private static void tryRevert(ServerLevel level, WbiReg reg, ServerSubLevel subLevel,
+                                  boolean lenient) {
         Pose3d pose = subLevel.logicalPose();
         LevelPlot plot = subLevel.getPlot();
         BlockPos localAnchor = plot.getCenterBlock();
 
         Vector3d worldAnchor = worldAnchorOf(subLevel);
 
-        Integer angle = alignedYawAngle(pose.orientation());
-        boolean nearCenter = isNearBlockCenter(worldAnchor);
+        double posEps = lenient ? SIConfig.snapAssistPositionEpsilon()
+                : SIConfig.snapPositionEpsilon();
+        double yawEps = lenient ? SIConfig.snapAssistOrientationEpsilon()
+                : SIConfig.snapOrientationEpsilon();
+
+        Integer angle = alignedYawAngle(pose.orientation(), yawEps);
+        boolean nearCenter = isNearBlockCenter(worldAnchor, posEps);
 
         if (angle == null || !nearCenter) {
+            if (lenient) {
+                // The only place the actual numbers are ever visible. Without this
+                // a piece that never reverts is indistinguishable from a piece the
+                // pass never looked at, and the tolerances stay guesses.
+                StructuralIntegrity.LOGGER.info(
+                        "[SI] SNAP ASSIST declined after {} still tick(s): {} - {}",
+                        SIConfig.restCheckTicks() + SIConfig.snapAssistTicks(),
+                        angle == null ? "orientation" : "position",
+                        describeAlignment(pose, worldAnchor));
+            }
             return;
+        }
+
+        if (lenient) {
+            StructuralIntegrity.LOGGER.info(
+                    "[SI] SNAP ASSIST took after {} still tick(s): rounding to yaw {} at {},{},{} - {}",
+                    SIConfig.restCheckTicks() + SIConfig.snapAssistTicks(), angle,
+                    (int) Math.floor(worldAnchor.x), (int) Math.floor(worldAnchor.y), (int) Math.floor(worldAnchor.z),
+                    describeAlignment(pose, worldAnchor));
         }
 
         BlockPos targetAnchor = BlockPos.containing(worldAnchor.x, worldAnchor.y, worldAnchor.z);
         revert(level, reg, subLevel, plot, localAnchor, targetAnchor, angle);
+    }
+
+    /**
+     * How far off the grid a body actually is, in the same units the epsilons are
+     * written in: the up-vector's distance from straight up, the facing vector's
+     * distance from the nearest quarter turn, and how far each coordinate sits from
+     * the centre of the block it is in.
+     */
+    private static String describeAlignment(Pose3d pose, Vector3d worldAnchor) {
+        Vector3d up = pose.orientation().transform(new Vector3d(0, 1, 0));
+        Vector3d facing = pose.orientation().transform(new Vector3d(1, 0, 0));
+        Vec3 facingWorld = new Vec3(facing.x, facing.y, facing.z);
+        double bestYaw = Double.MAX_VALUE;
+        int bestAngle = -1;
+        for (int a = 0; a < 4; a++) {
+            double d = facingWorld.distanceTo(new Vec3(1, 0, 0).yRot((float) (a * Math.PI / 2.0)));
+            if (d < bestYaw) {
+                bestYaw = d;
+                bestAngle = a;
+            }
+        }
+        return String.format(
+                "up=%.3f (allow %.3f, never widened) yaw=%.3f to quarter-turn %d (allow %.3f) "
+                        + "offset=%.3f,%.3f,%.3f (allow %.3f)",
+                up.distance(0, 1, 0), SIConfig.snapOrientationEpsilon(),
+                bestYaw, bestAngle, SIConfig.snapAssistOrientationEpsilon(),
+                offsetFromCentre(worldAnchor.x), offsetFromCentre(worldAnchor.y),
+                offsetFromCentre(worldAnchor.z), SIConfig.snapAssistPositionEpsilon());
+    }
+
+    private static double offsetFromCentre(double coord) {
+        return Math.abs((coord - Math.floor(coord)) - 0.5);
     }
 
     /**
@@ -707,10 +784,12 @@ public final class SIFall {
      *
      * @return 0-3, or null if not aligned to a quarter-turn (or tipped off of pure yaw)
      */
-    private static Integer alignedYawAngle(Quaterniondc orientation) {
-        double eps = SIConfig.snapOrientationEpsilon();
+    private static Integer alignedYawAngle(Quaterniondc orientation, double yawEps) {
         Vector3d up = orientation.transform(new Vector3d(0, 1, 0));
-        if (up.distance(0, 1, 0) > eps) {
+        // Never widened, not even by the assist pass: a body lying on its side or
+        // tipped onto a corner cannot be expressed as block states at all, and
+        // rounding that away would stand a toppled wall back up.
+        if (up.distance(0, 1, 0) > SIConfig.snapOrientationEpsilon()) {
             return null; // pitched or rolled - vanilla block states can't represent this anyway
         }
 
@@ -719,20 +798,20 @@ public final class SIFall {
 
         for (int angle = 0; angle < 4; angle++) {
             Vec3 candidate = new Vec3(1, 0, 0).yRot((float) (angle * Math.PI / 2.0));
-            if (facingWorld.distanceTo(candidate) <= eps) {
+            if (facingWorld.distanceTo(candidate) <= yawEps) {
                 return angle;
             }
         }
         return null;
     }
 
-    private static boolean isNearBlockCenter(Vector3d pos) {
-        return isNearHalf(pos.x) && isNearHalf(pos.y) && isNearHalf(pos.z);
+    private static boolean isNearBlockCenter(Vector3d pos, double eps) {
+        return isNearHalf(pos.x, eps) && isNearHalf(pos.y, eps) && isNearHalf(pos.z, eps);
     }
 
-    private static boolean isNearHalf(double coord) {
+    private static boolean isNearHalf(double coord, double eps) {
         double frac = coord - Math.floor(coord);
-        return Math.abs(frac - 0.5) <= SIConfig.snapPositionEpsilon();
+        return Math.abs(frac - 0.5) <= eps;
     }
 
     /**

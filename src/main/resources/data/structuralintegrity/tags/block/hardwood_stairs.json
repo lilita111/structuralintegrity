@@ -1,0 +1,9 @@
+{
+  "replace": false,
+  "values": [
+    "minecraft:dark_oak_stairs",
+    "minecraft:acacia_stairs",
+    "minecraft:jungle_stairs",
+    "minecraft:mangrove_stairs"
+  ]
+}
