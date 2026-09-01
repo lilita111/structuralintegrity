@@ -259,9 +259,22 @@ public final class Integrity {
      * once in its life.
      *
      * Material matters at the crossings, and only there. The step where the walk
-     * would pass INTO a sturdier material - the next block's natural integrity
-     * above the previous block's - applies the delta once to that first block and
-     * stops there, absorbed. Into a WEAKER material the crossing concentrates:
+     * passes INTO a sturdier material - the next block's natural integrity above
+     * the previous block's - is a BRACE: one point of the loss moves off the
+     * weaker block and onto the sturdier one. The weaker block is handed its point
+     * back, so it ends the pass unchanged; the sturdier one takes an extra point,
+     * so a -1 becomes -2; and the walk carries on past the crossing. The pair is
+     * conserved, which is what keeps a place and its later break cancelling
+     * exactly, and the relax mirrors it - the sturdier block gains two, the weaker
+     * gives one back. If a clamp stops the sturdier block from taking its extra
+     * point, no point moved, so nothing is refunded either. Gated by
+     * {@code strongerMaterialBraces}; with it off, the old behaviour returns and
+     * the crossing applies the delta once and stops there, absorbed. That older
+     * behaviour also stands on the FIRST step of a walk, where the block handing
+     * the load over is the origin - the load itself, never charged by the chain -
+     * so there is nothing to refund and no transfer to make.
+     *
+     * Into a WEAKER material the crossing concentrates:
      * the first block of the new material takes the previous block's whole
      * remaining deficit (nireg - wbireg, measured after that block's own
      * application, floored at zero) instead of the plain delta, and the walk then
@@ -335,6 +348,7 @@ public final class Integrity {
         int maxLoadPath = SIConfig.maxLoadPath();
         int failAt = SIConfig.failAt();
         boolean boundaryStops = SIConfig.materialBoundaryStops();
+        boolean bracing = SIConfig.strongerMaterialBraces();
         // The material the delta arrives FROM - the placed or removed block itself
         // on the first step. Every caller runs before removal (BreakEvent and
         // Detonate fire with the blocks still present), so its nireg is readable;
@@ -366,7 +380,13 @@ public final class Integrity {
             }
 
             int natural = naturalOf(level, cur, level.getBlockState(cur));
-            boolean rising = boundaryStops && prevNatural > 0 && natural > prevNatural;
+            boolean stronger = prevNatural > 0 && natural > prevNatural;
+            // A brace needs something to brace: prevDeficit is only non-negative once
+            // the walk has actually charged a block, so this is false on the first
+            // step, where the block handing the load over is the origin and was never
+            // part of the chain. There the sturdier block absorbs and stops instead.
+            boolean brace = bracing && stronger && prevDeficit >= 0 && prev != null;
+            boolean rising = boundaryStops && stronger && !brace;
             boolean falling = boundaryStops && prevNatural > 0 && natural < prevNatural
                     && prevDeficit >= 0;
             if (falling && prevDeficit == 0) {
@@ -404,15 +424,40 @@ public final class Integrity {
             }
 
             int stored = storedAt(level, reg, cur);
-            int now;
-            if (delta < 0) {
-                // A block cannot be worse than spent. Below FAIL_AT the number is
-                // meaningless - it is already queued for destruction - and it only
-                // makes the report harder to read.
-                now = Math.max(failAt, stored + applied);
-            } else {
-                now = Math.min(stored + applied, Math.max(stored, natural));
+
+            // The braced point: one point of the loss, in whichever direction the
+            // pass is going, moved off the weaker block that handed the load over
+            // and onto this sturdier one. Applied AFTER the sideways doubling on
+            // purpose - the doubling scales a load, this moves a fixed point
+            // between two blocks, and scaling it would stop the pair balancing.
+            int step = delta < 0 ? -1 : 1;
+            int braced = 0;
+            int prevStored = 0;
+            if (brace) {
+                prevStored = storedAt(level, reg, prev);
+                int plainNow = clampToRange(stored + applied, delta, failAt, stored, natural);
+                int bracedNow = clampToRange(stored + applied + step, delta, failAt, stored,
+                        natural);
+                // Both halves or neither. If a clamp ate the sturdier block's extra
+                // point - already spent on a charge, already at natural on a relax -
+                // then no point moved and there is nothing to hand back, or a break
+                // against a healthy lintel would silently damage the wood above it.
+                boolean sturdierTakesIt = bracedNow - plainNow == step;
+                // And on a relax the refund is a -1, which must never be the thing
+                // that puts a row on the floor.
+                boolean weakerGivesIt = delta < 0 || prevStored - step > failAt;
+                if (sturdierTakesIt && weakerGivesIt) {
+                    braced = step;
+                } else {
+                    brace = false;
+                    trace.append("!BRACE-CLAMPED");
+                }
             }
+
+            // A block cannot be worse than spent, and cannot heal past what it is.
+            // Below FAIL_AT the number is meaningless - already queued for
+            // destruction - and it only makes the report harder to read.
+            int now = clampToRange(stored + applied + braced, delta, failAt, stored, natural);
             if (now != stored) {
                 reg.set(cur, now);
                 if (touched != null) {
@@ -430,6 +475,22 @@ public final class Integrity {
             }
             if (owes) {
                 trace.append("(side").append(applied).append(')');
+            }
+            if (braced != 0) {
+                // Hand the weaker block its point back. It cannot overshoot: on a
+                // charge this only undoes part of what this same pass just took, and
+                // on a relax the guard above proved the row can spare it.
+                int back = prevStored - braced;
+                reg.set(prev, back);
+                if (touched != null) {
+                    // Recorded as its own entry so restoreTouched, which negates each
+                    // amount in turn, gives back the net movement rather than the
+                    // gross one.
+                    touched.add(new Touched(prev, back - prevStored));
+                }
+                trace.append("(brace ").append(braced).append(" off ")
+                        .append(prev.getX()).append(',').append(prev.getY()).append(',')
+                        .append(prev.getZ()).append('=').append(back).append(')');
             }
 
             if (delta < 0 && now <= failAt) {
@@ -463,6 +524,17 @@ public final class Integrity {
         }
         return new Chained(count, failed, capped, trace.toString(),
                 touched == null ? List.of() : touched);
+    }
+
+    /**
+     * The one clamp both directions of a {@link #chain} step go through: a charge
+     * cannot drive a block below {@code failAt}, and a relax cannot heal one past
+     * its own natural integrity - though a value already above natural, a clump
+     * grant, is left where it stands rather than cut down to fit.
+     */
+    private static int clampToRange(int value, int delta, int failAt, int stored, int natural) {
+        return delta < 0 ? Math.max(failAt, value)
+                : Math.min(value, Math.max(stored, natural));
     }
 
     /**

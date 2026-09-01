@@ -1399,4 +1399,94 @@ public final class SIGameTests {
         helper.succeedWhen(() -> helper.assertTrue(moved.get(),
                 "a player landing on the body did not change its velocity: struck=" + struck.get()));
     }
+
+    // ---- 0.7.5 -------------------------------------------------------------
+
+    /**
+     * A stronger material braces the weaker one that leans on it.
+     *
+     * The structure is a plank wall standing on a stone block standing on ground,
+     * so the charge from the top plank walks plank -> plank -> stone and crosses
+     * into a sturdier material once, in the middle of the walk rather than on its
+     * first step. That placement matters: on the first step the block handing the
+     * load over is the origin, which the chain never charges, so there is nothing
+     * to hand back and the old absorb-and-stop behaviour stands there instead.
+     *
+     * What the rule does at the crossing is move one point, not add one. The plank
+     * takes its -1 and is then handed it straight back, ending the pass unchanged;
+     * the stone takes -2. So the pair loses exactly the two points it would have
+     * lost anyway, and the second assertion here is the one that says so. A future
+     * refactor that read the rule as "the strong block takes an extra -1" would
+     * satisfy the first assertion and fail this one, and the mod would quietly grow
+     * a new source of damage that scaled with how many material changes a builder
+     * used.
+     *
+     * The third assertion is the reason the rule is written symmetrically at all.
+     * {@link Integrity#chain} is one function serving placement (-1), breaking (+1)
+     * and explosion relax, so a brace that fired only on the loss direction would
+     * mean a place followed by a break did not cancel: every cycle would leave the
+     * stone one point down and the plank one point up, and a player who built and
+     * unbuilt in the same spot would grind their own foundation away without ever
+     * seeing why.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void strongerMaterialBracesTheWeakerOneAboveIt(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        // Ground, then one stone course, then two of planks. Untracked ground reads
+        // as ANCHOR, so the chain has somewhere to end.
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y, PILLAR_Z), Blocks.STONE);
+
+        BlockPos stone = helper.absolutePos(new BlockPos(PILLAR_X, FLOOR_Y + 1, PILLAR_Z));
+        BlockPos lower = helper.absolutePos(new BlockPos(PILLAR_X, FLOOR_Y + 2, PILLAR_Z));
+        BlockPos upper = helper.absolutePos(new BlockPos(PILLAR_X, FLOOR_Y + 3, PILLAR_Z));
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y + 1, PILLAR_Z), Blocks.STONE);
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y + 2, PILLAR_Z), Blocks.OAK_PLANKS);
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y + 3, PILLAR_Z), Blocks.OAK_PLANKS);
+        Integrity.place(level, reg, stone);
+        Integrity.place(level, reg, lower);
+        Integrity.place(level, reg, upper);
+
+        int stoneNatural = Integrity.naturalOf(level, stone, level.getBlockState(stone));
+        int plankNatural = Integrity.naturalOf(level, lower, level.getBlockState(lower));
+        helper.assertTrue(stoneNatural > plankNatural,
+                "the test needs stone to outrank planks - natural_integrity.json changed");
+
+        int stoneBefore = reg.get(stone);
+        int lowerBefore = reg.get(lower);
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] BRACE built: plank natural={} stone natural={} rows plank={} stone={}",
+                plankNatural, stoneNatural, lowerBefore, stoneBefore);
+
+        // One charge, walking down from the lower plank. The origin is the plank
+        // above it, so the first step is plank -> plank (equal calibre, nothing
+        // special) and the crossing into stone happens on the second.
+        Integrity.Chained charged = Integrity.chain(level, reg, lower, upper, null, -1);
+        int stoneCharged = reg.get(stone);
+        int lowerCharged = reg.get(lower);
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] BRACE charged: plank {}->{} stone {}->{} trace {}",
+                lowerBefore, lowerCharged, stoneBefore, stoneCharged, charged.trace());
+
+        helper.assertValueEqual(lowerCharged, lowerBefore,
+                "the plank handing the load into stone should end the pass unchanged");
+        helper.assertValueEqual(stoneCharged, stoneBefore - 2,
+                "the stone bracing the plank should take two points, not one");
+        helper.assertValueEqual((lowerCharged - lowerBefore) + (stoneCharged - stoneBefore), -2,
+                "the brace moved a point, it did not create one - the pair must still total -2");
+
+        // The same walk with the sign flipped, which is exactly what a break of the
+        // block above would run. Both rows must land back where they started.
+        Integrity.Chained relaxed = Integrity.chain(level, reg, lower, upper, null, 1);
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] BRACE relaxed: plank {}->{} stone {}->{} trace {}",
+                lowerCharged, reg.get(lower), stoneCharged, reg.get(stone), relaxed.trace());
+
+        helper.assertValueEqual(reg.get(stone), stoneBefore,
+                "a relax did not give the stone back what the charge took - "
+                        + "place/break no longer cancels and every cycle grinds the foundation");
+        helper.assertValueEqual(reg.get(lower), lowerBefore,
+                "a relax did not leave the plank where it started");
+    }
 }

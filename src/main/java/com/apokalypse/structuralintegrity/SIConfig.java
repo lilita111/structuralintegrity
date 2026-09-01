@@ -336,6 +336,23 @@ public final class SIConfig {
                     "untouched. Charge and relax walk the same way.")
             .define("materialBoundaryStops", true);
 
+    private static final ModConfigSpec.BooleanValue STRONGER_MATERIAL_BRACES = B
+            .comment("true: a stronger material braces the weaker one that leans on it. When the",
+                    "chain crosses from a weaker block into a sturdier one, one point of the",
+                    "loss moves off the weaker block onto the sturdier: the weaker block is",
+                    "given its point back (so it ends the pass unchanged) and the sturdier one",
+                    "takes an extra point (so -1 becomes -2). The walk then CONTINUES past the",
+                    "crossing rather than stopping, which is what makes this a brace and not an",
+                    "absorb. Crossing the other way - into a weaker material - is untouched, and",
+                    "so is everything else the pass does.",
+                    "The pair is conserved, so the two blocks together lose exactly what they",
+                    "lost before and a place/break cycle still cancels; a relax mirrors it, the",
+                    "sturdier block gaining two and the weaker giving one back. If a clamp stops",
+                    "the sturdier block taking its extra point, nothing is transferred at all.",
+                    "This supersedes the sturdier half of materialBoundaryStops. Turn it off to",
+                    "get the old absorb-and-stop back.")
+            .define("strongerMaterialBraces", true);
+
     private static final ModConfigSpec.IntValue MAX_LOAD_PATH = B
             .comment("How many blocks the placement charge may descend before giving up.")
             .defineInRange("maxLoadPath", Integrity.MAX_LOAD_PATH, 1, 4096);
@@ -608,6 +625,10 @@ public final class SIConfig {
 
     public static boolean materialBoundaryStops() {
         return !SPEC.isLoaded() || MATERIAL_BOUNDARY_STOPS.get();
+    }
+
+    public static boolean strongerMaterialBraces() {
+        return !SPEC.isLoaded() || STRONGER_MATERIAL_BRACES.get();
     }
 
     public static int maxLoadPath() {
