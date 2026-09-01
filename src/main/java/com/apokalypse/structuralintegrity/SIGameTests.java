@@ -994,7 +994,7 @@ public final class SIGameTests {
                 | (r.anchor() ? SIPayloads.FLAG_ANCHOR : 0)
                 | (r.grounded() ? SIPayloads.FLAG_GROUNDED : 0);
         SIPayloads.Info info =
-                new SIPayloads.Info(inner, r.natural(), r.stored(), r.hangMax(), flags);
+                new SIPayloads.Info(inner, r.natural(), r.stored(), r.hangMax(), flags, 0, 0, 0);
 
         StructuralIntegrity.LOGGER.info(
                 "[SI-TEST] GOGGLE {}: natural={} stored={} hangMax={} hangSum={} grounded={}"
@@ -1488,5 +1488,93 @@ public final class SIGameTests {
                         + "place/break no longer cancels and every cycle grinds the foundation");
         helper.assertValueEqual(reg.get(lower), lowerBefore,
                 "a relax did not leave the plank where it started");
+    }
+
+    // ---- 0.7.6 -------------------------------------------------------------
+
+    /**
+     * The goggles report the footing, and the footing is found by the real walk.
+     *
+     * The structure is the user's own example: a stone brick foundation carrying a
+     * plank wall. Looking at a plank, the Integrity row says 20 / 20 and is telling
+     * the truth about that plank, which is exactly the problem - the support chain
+     * has no falloff, so every plank above pays into the same stone course, and the
+     * stone is the block that fails while the planks stay pristine. The Structure
+     * row is that stone: its row, against its own natural rating.
+     *
+     * The second half is a drift alarm. {@link Integrity#probe} is
+     * {@link Integrity#chain} itself run dry rather than a shorter routine that
+     * follows supports down, and the whole justification for that is that a
+     * read-out built from the physics cannot contradict the physics. That only
+     * holds while the two walks really do cover the same blocks, so this runs the
+     * probe and then runs a real charge from the same block and compares the step
+     * counts. If someone later changes where a load goes, or dry mode stops early
+     * because it has nothing to write, the number on a player's HUD would go on
+     * looking authoritative while pointing at the wrong block - and this fails
+     * instead.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void goggleStructureRowNamesTheFooting(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        // Ground, then one stone brick course, then three of planks. Untracked
+        // ground reads as ANCHOR, so the walk has somewhere to end.
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y, PILLAR_Z), Blocks.STONE);
+
+        BlockPos footing = helper.absolutePos(new BlockPos(PILLAR_X, FLOOR_Y + 1, PILLAR_Z));
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y + 1, PILLAR_Z), Blocks.STONE_BRICKS);
+        Integrity.place(level, reg, footing);
+
+        BlockPos top = null;
+        for (int i = 2; i <= 4; i++) {
+            helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y + i, PILLAR_Z), Blocks.OAK_PLANKS);
+            top = helper.absolutePos(new BlockPos(PILLAR_X, FLOOR_Y + i, PILLAR_Z));
+            Integrity.place(level, reg, top);
+        }
+
+        int footingNatural = Integrity.naturalOf(level, footing, level.getBlockState(footing));
+        int plankNatural = Integrity.naturalOf(level, top, level.getBlockState(top));
+        helper.assertTrue(footingNatural > plankNatural,
+                "the test needs stone bricks to outrank planks - natural_integrity.json changed");
+
+        Integrity.Probe probe = Integrity.probe(level, reg, top);
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] PROBE from {} depth={} last={} {}/{} capped={} trace {}",
+                top, probe.depth(), probe.last(), probe.stored(), probe.natural(),
+                probe.capped(), probe.trace());
+
+        helper.assertTrue(probe.found(), "the probe found no chain under a wall standing on stone");
+        helper.assertFalse(probe.capped(), "a four-block chain should not hit maxLoadPath");
+        helper.assertTrue(probe.last().equals(footing),
+                "the Structure row must name the stone brick footing, not " + probe.last());
+        helper.assertValueEqual(probe.natural(), footingNatural,
+                "the Structure row's denominator is the FOOTING's rating, not the plank's");
+        helper.assertValueEqual(probe.stored(), reg.get(footing),
+                "the Structure row's value is the footing's row as it stands");
+        helper.assertValueEqual(probe.path().get(0), top,
+                "the walk starts at the block being looked at, not at its support");
+
+        // A dry walk must not change anything - that is the entire contract of the
+        // read-out, and a stray write here would damage a building by looking at it.
+        int footingBefore = reg.get(footing);
+        int topBefore = reg.get(top);
+        Integrity.probe(level, reg, top);
+        helper.assertValueEqual(reg.get(footing), footingBefore,
+                "the probe wrote to the footing - reading a block must never charge it");
+        helper.assertValueEqual(reg.get(top), topBefore,
+                "the probe wrote to the block it started from");
+
+        // The drift alarm. Same start, same direction, one dry and one real.
+        Integrity.Chained charged = Integrity.chain(level, reg, top, null, null, -1);
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] PROBE drift: dry depth={} real count={} trace {}",
+                probe.depth(), charged.count(), charged.trace());
+        helper.assertValueEqual(probe.depth(), charged.count(),
+                "the dry walk and the real charge covered different blocks - the goggle "
+                        + "read-out has drifted from the physics it claims to report");
+
+        // And put it back, so the test leaves the structure as it found it.
+        Integrity.chain(level, reg, top, null, null, 1);
     }
 }

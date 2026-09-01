@@ -68,6 +68,9 @@ public class StructuralIntegrity {
                 + "neighbours as they stand now and charges nobody; it never lowers a row, and it "
                 + "never re-pays the clump grant, so a damaged wall is mended from the bottom up",
                 SIConfig.wrenchRepairItem());
+        LOGGER.info("[SI] goggles: the Structure row is the last block of the support chain - the "
+                + "footing everything above pays into, which is the block that actually fails; "
+                + "measured by the charge walk itself, run dry");
         LOGGER.info("[SI] reads never write: goggle queries and region floods peek, only the solver's "
                 + "write paths materialise wbireg rows; never_anchor blocks enter tracking at first write");
     }

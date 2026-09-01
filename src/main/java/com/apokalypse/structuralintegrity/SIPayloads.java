@@ -51,18 +51,38 @@ public final class SIPayloads {
 
     // -- server answers ----------------------------------------------------
 
-    public record Info(BlockPos pos, int natural, int stored, int hang, int flags)
+    public record Info(BlockPos pos, int natural, int stored, int hang, int flags,
+                       int chainStored, int chainNatural, int chainDepth)
             implements CustomPacketPayload {
         public static final Type<Info> TYPE = new Type<>(
                 ResourceLocation.fromNamespaceAndPath(StructuralIntegrity.MODID, "info"));
 
-        public static final StreamCodec<ByteBuf, Info> CODEC = StreamCodec.composite(
-                BlockPos.STREAM_CODEC, Info::pos,
-                ByteBufCodecs.VAR_INT, Info::natural,
-                ByteBufCodecs.VAR_INT, Info::stored,
-                ByteBufCodecs.VAR_INT, Info::hang,
-                ByteBufCodecs.VAR_INT, Info::flags,
-                Info::new);
+        // Written out by hand because StreamCodec.composite tops out at six
+        // component pairs and this record has eight. The alternative - folding the
+        // three footing fields into a nested record - would put a second shape on
+        // the wire to work around a helper's argument list, which is a worse trade
+        // than eight explicit lines. Field order here IS the wire format: read in
+        // the same order it is written, and change both together.
+        public static final StreamCodec<ByteBuf, Info> CODEC = StreamCodec.of(
+                (buf, info) -> {
+                    BlockPos.STREAM_CODEC.encode(buf, info.pos());
+                    ByteBufCodecs.VAR_INT.encode(buf, info.natural());
+                    ByteBufCodecs.VAR_INT.encode(buf, info.stored());
+                    ByteBufCodecs.VAR_INT.encode(buf, info.hang());
+                    ByteBufCodecs.VAR_INT.encode(buf, info.flags());
+                    ByteBufCodecs.VAR_INT.encode(buf, info.chainStored());
+                    ByteBufCodecs.VAR_INT.encode(buf, info.chainNatural());
+                    ByteBufCodecs.VAR_INT.encode(buf, info.chainDepth());
+                },
+                buf -> new Info(
+                        BlockPos.STREAM_CODEC.decode(buf),
+                        ByteBufCodecs.VAR_INT.decode(buf),
+                        ByteBufCodecs.VAR_INT.decode(buf),
+                        ByteBufCodecs.VAR_INT.decode(buf),
+                        ByteBufCodecs.VAR_INT.decode(buf),
+                        ByteBufCodecs.VAR_INT.decode(buf),
+                        ByteBufCodecs.VAR_INT.decode(buf),
+                        ByteBufCodecs.VAR_INT.decode(buf)));
 
         @Override
         public Type<? extends CustomPacketPayload> type() {
@@ -79,6 +99,15 @@ public final class SIPayloads {
 
         public boolean structural() {
             return (flags & FLAG_STRUCTURAL) != 0;
+        }
+
+        /**
+         * Whether the server found a support chain under this block at all. An
+         * anchor has none - it IS the ground - and neither does a block the walk
+         * could not start from.
+         */
+        public boolean hasChain() {
+            return chainDepth > 0 && chainNatural > 0;
         }
 
         /**
@@ -107,7 +136,10 @@ public final class SIPayloads {
     // -- registration ------------------------------------------------------
 
     public static void register(RegisterPayloadHandlersEvent event) {
-        PayloadRegistrar registrar = event.registrar("1");
+        // Bumped from "1" when Info grew the footing fields. A client on the old
+        // shape and a server on the new one would otherwise decode three numbers
+        // that are not there.
+        PayloadRegistrar registrar = event.registrar("2");
         registrar.playToServer(Query.TYPE, Query.CODEC, SIPayloads::onQuery);
         registrar.playToClient(Info.TYPE, Info.CODEC, SIPayloads::onInfo);
         StructuralIntegrity.LOGGER.info("[SI] registered goggle payloads (query, info)");
@@ -123,7 +155,13 @@ public final class SIPayloads {
             if (!pos.closerToCenterThan(player.position(), MAX_QUERY_DISTANCE) || !level.isLoaded(pos)) {
                 return;
             }
-            Integrity.Result r = Integrity.compute(level, WbiReg.of(level), pos);
+            WbiReg reg = WbiReg.of(level);
+            Integrity.Result r = Integrity.compute(level, reg, pos);
+            // Where this block's load actually ends up. One dry walk down the same
+            // support chain a placement charges - it writes nothing, and it is the
+            // same code, so the read-out cannot disagree with the physics.
+            Integrity.Probe probe = r.structural() && !r.anchor()
+                    ? Integrity.probe(level, reg, pos) : null;
 
             int flags = 0;
             if (r.anchor()) {
@@ -136,7 +174,10 @@ public final class SIPayloads {
                 flags |= FLAG_STRUCTURAL;
             }
             PacketDistributor.sendToPlayer(player,
-                    new Info(pos, r.natural(), r.stored(), r.hangMax(), flags));
+                    new Info(pos, r.natural(), r.stored(), r.hangMax(), flags,
+                            probe == null ? 0 : probe.stored(),
+                            probe == null ? 0 : probe.natural(),
+                            probe == null ? 0 : probe.depth()));
         });
     }
 

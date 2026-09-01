@@ -124,6 +124,37 @@ public final class Integrity {
     public record Restored(int count, int skipped, String trace) {}
 
     /**
+     * Where a block's load ends up, read without changing anything.
+     *
+     * The support chain has no falloff - every block above pays the same amount
+     * into the same footing - so the block at the BOTTOM of the walk is the one
+     * that fails first, and it is the only number that says whether a structure is
+     * in danger. A pristine plank reading 20/20 tells a builder nothing while the
+     * stone course under it sits one point from going.
+     *
+     * @param last    the last block the walk applied to before it exited - the
+     *                footing, or null if the start was not part of a chain at all
+     * @param stored  that block's wbireg row as it stands now
+     * @param natural that block's material rating, the denominator to show it against
+     * @param path    every block the walk covered, in order, start first
+     * @param capped  the walk hit {@link SIConfig#maxLoadPath} and gave up, so
+     *                {@code last} is where it stopped rather than a real footing
+     */
+    public record Probe(@Nullable BlockPos last, int stored, int natural,
+                        List<BlockPos> path, boolean capped, String trace) {
+
+        /** How many blocks deep the chain ran. */
+        public int depth() {
+            return path.size();
+        }
+
+        /** Whether the walk found anything at all to report. */
+        public boolean found() {
+            return last != null;
+        }
+    }
+
+    /**
      * What holds a block up: the neighbour with the most left in it.
      *
      * The single definition of support in the mod. {@link #place} asks it what the
@@ -328,6 +359,22 @@ public final class Integrity {
     public static Chained chain(ServerLevel level, WbiReg reg, BlockPos start,
                                 @Nullable BlockPos origin, @Nullable Set<BlockPos> excluded,
                                 int delta, boolean returnList) {
+        return chain(level, reg, start, origin, excluded, delta, returnList, false, null);
+    }
+
+    /**
+     * {@link #chain} with the two knobs only {@link #probe} needs.
+     *
+     * @param dry  make every decision the walk would make and apply NONE of them:
+     *             no row is written, no block is charged, no point is braced. This
+     *             is what keeps the goggle read-out and the physics one
+     *             implementation rather than two that agree until one is edited.
+     * @param path when given, every block the walk applied to, in order
+     */
+    private static Chained chain(ServerLevel level, WbiReg reg, BlockPos start,
+                                 @Nullable BlockPos origin, @Nullable Set<BlockPos> excluded,
+                                 int delta, boolean returnList, boolean dry,
+                                 @Nullable List<BlockPos> path) {
         List<Touched> touched = returnList ? new ArrayList<>() : null;
         List<BlockPos> failed = new ArrayList<>();
         Set<BlockPos> visited = new HashSet<>();
@@ -417,9 +464,10 @@ public final class Integrity {
             }
 
             // The interface block takes the strong side's whole deficit; every
-            // other step takes the plain delta.
-            int applied = falling ? (delta < 0 ? -prevDeficit : prevDeficit) : delta;
-            if (owes && (delta < 0 || SIConfig.sidewaysMultiplierOnRestore())) {
+            // other step takes the plain delta. A dry walk takes nothing - it is
+            // here to find out WHERE the load goes, not to move it.
+            int applied = dry ? 0 : falling ? (delta < 0 ? -prevDeficit : prevDeficit) : delta;
+            if (!dry && owes && (delta < 0 || SIConfig.sidewaysMultiplierOnRestore())) {
                 applied = scaleSideways(applied);
             }
 
@@ -433,7 +481,7 @@ public final class Integrity {
             int step = delta < 0 ? -1 : 1;
             int braced = 0;
             int prevStored = 0;
-            if (brace) {
+            if (brace && !dry) {
                 prevStored = storedAt(level, reg, prev);
                 int plainNow = clampToRange(stored + applied, delta, failAt, stored, natural);
                 int bracedNow = clampToRange(stored + applied + step, delta, failAt, stored,
@@ -458,13 +506,16 @@ public final class Integrity {
             // Below FAIL_AT the number is meaningless - already queued for
             // destruction - and it only makes the report harder to read.
             int now = clampToRange(stored + applied + braced, delta, failAt, stored, natural);
-            if (now != stored) {
+            if (!dry && now != stored) {
                 reg.set(cur, now);
                 if (touched != null) {
                     touched.add(new Touched(cur, now - stored));
                 }
             }
             count++;
+            if (path != null) {
+                path.add(cur);
+            }
             if (trace.length() > 0) {
                 trace.append(" -> ");
             }
@@ -524,6 +575,35 @@ public final class Integrity {
         }
         return new Chained(count, failed, capped, trace.toString(),
                 touched == null ? List.of() : touched);
+    }
+
+    /**
+     * Follow a block's support chain to the bottom without touching anything, and
+     * report what is standing there.
+     *
+     * This is {@link #chain} itself in dry mode, not a second walk that resembles
+     * it. Every decision the real charge makes is made here - which neighbour holds
+     * the block up, where ground ends the descent, the loop guard, the path cap,
+     * and the material crossings including the brace - and none of them are
+     * applied. Anything that changes the physics changes this read-out in the same
+     * commit, which is the only way a read-out stays true.
+     *
+     * Walked with delta -1 because the sign selects which exits apply, and the
+     * question being asked - where does this block's load end up, and what is
+     * holding it there - is the charge direction. No origin: the block being looked
+     * at is part of the structure being measured, not a load arriving on top of it,
+     * so it is the first step of the walk rather than excluded from it.
+     */
+    public static Probe probe(ServerLevel level, WbiReg reg, BlockPos start) {
+        List<BlockPos> path = new ArrayList<>();
+        Chained walked = chain(level, reg, start, null, null, -1, false, true, path);
+        if (path.isEmpty()) {
+            return new Probe(null, 0, 0, List.of(), walked.capped(), walked.trace());
+        }
+        BlockPos last = path.get(path.size() - 1);
+        return new Probe(last, storedAt(level, reg, last),
+                naturalOf(level, last, level.getBlockState(last)),
+                List.copyOf(path), walked.capped(), walked.trace());
     }
 
     /**
