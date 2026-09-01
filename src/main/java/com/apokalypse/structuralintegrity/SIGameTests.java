@@ -709,8 +709,8 @@ public final class SIGameTests {
     /**
      * A spent block stands, and stops carrying.
      *
-     * This is the whole of breakOnIntegrityLoss=false, which became the default in
-     * 0.6.6 and had no coverage: a block driven to failAt is left in the world
+     * This is the whole of the holding branch, which became the default in 0.6.6
+     * and had no coverage: a block driven to failAt is left in the world
      * rather than destroyed, and what it was holding is expected to come away
      * around it. The block staying put is easy to see; the load actually shedding
      * is not, because it depends on every graph walk agreeing that rubble conducts
@@ -725,17 +725,27 @@ public final class SIGameTests {
         WbiReg reg = WbiReg.of(level);
         Block mat = Blocks.STONE;
 
-        // isSpent is hard-wired to return false while the config still destroys
-        // failing blocks, so with the key the other way round every assertion below
-        // would be testing nothing and passing anyway. Say so out loud rather than
-        // letting a config drift read as a green run.
-        helper.assertTrue(!SIConfig.breakOnIntegrityLoss(),
-                "this test covers breakOnIntegrityLoss=false, the default since 0.6.6,"
-                        + " but the loaded config has it true - spent blocks do not exist"
-                        + " in that mode and there is nothing here to check");
-
         // Ground: never routed through Integrity.place, so it reads as WbiReg.ANCHOR.
         helper.setBlock(new BlockPos(3, FLOOR_Y, 3), mat);
+
+        // isSpent is hard-wired to return false for a material the config destroys,
+        // so under a threshold below this block's natural every assertion here would
+        // be testing nothing and passing anyway. Say so out loud rather than letting
+        // a config drift read as a green run.
+        //
+        // This is why run/config sets holdSpentUpToNatural above the shipped 2: the
+        // test needs one material that is both HELD and strong enough to stand a four
+        // block pillar, and at the shipped default no such material exists. Holding
+        // stops at natural 2 and a natural 2 block cannot carry two of itself, so the
+        // pillar would spend its own base while being built. The branch is what is
+        // under test, not the number that selects it.
+        BlockPos probe = helper.absolutePos(new BlockPos(3, FLOOR_Y, 3));
+        helper.assertTrue(Integrity.holdsWhenSpent(level, probe),
+                "this test needs a material that is held when spent, but " + mat
+                        + " has natural integrity "
+                        + Integrity.naturalOf(level, probe, level.getBlockState(probe))
+                        + " and holdSpentUpToNatural is " + SIConfig.holdSpentUpToNatural()
+                        + " - raise the config in run/config or pick a softer block");
 
         // A four block pillar on it, each charged in properly so it owns a row.
         List<BlockPos> pillar = new ArrayList<>();
@@ -768,7 +778,7 @@ public final class SIGameTests {
                 level.getBlockState(spent).getBlock() == mat);
 
         helper.assertTrue(level.getBlockState(spent).getBlock() == mat,
-                "the spent block was destroyed - breakOnIntegrityLoss=false must leave it");
+                "the spent block was destroyed - a held material must be left standing");
         helper.assertTrue(Integrity.isStructural(level, spent, null),
                 "a spent block is still a block: isStructural must stay true");
         helper.assertTrue(!Integrity.conductsLoad(level, reg, spent, null),
@@ -778,6 +788,79 @@ public final class SIGameTests {
         helper.assertTrue(!Integrity.isConnectedToAnchor(level, reg, top, null),
                 "the pillar above the spent block still reaches ground - load did not shed");
         helper.succeed();
+    }
+
+    /**
+     * The threshold actually discriminates: soil stands, structure shatters.
+     *
+     * spentBlockStandsAndShedsLoad covers the holding branch and nothing else, so
+     * it would pass just as happily if holdSpentUpToNatural were still the boolean
+     * it replaced in 0.7.1 - it only ever looks at one material. What is new is
+     * that two blocks failing on the SAME tick can now meet different fates, which
+     * is exactly the case SIFall got wrong by construction before: it read the
+     * config once, above the worklist loop, so whatever the first block deserved
+     * the whole pass got.
+     *
+     * So this spends one block on each side of the threshold at the same moment
+     * and asserts they diverge. Both are set to failAt by hand and handed to
+     * {@link SIFall#queueDestroy} exactly as SIEvents.enforce does when a row
+     * reaches zero, which keeps the test on the real path rather than a seam.
+     *
+     * The two sit at opposite corners of the template deliberately. breakShockwave
+     * is on in the test config, so the block that does break propagates wear to its
+     * neighbours, and a soil block standing next to it would be surviving the
+     * shockwave rather than proving anything about the threshold.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void holdThresholdDiscriminatesByMaterial(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+        int threshold = SIConfig.holdSpentUpToNatural();
+        Block softMat = Blocks.DIRT;
+        Block hardMat = Blocks.STONE_BRICKS;
+
+        helper.setBlock(new BlockPos(1, FLOOR_Y, 1), softMat);
+        helper.setBlock(new BlockPos(5, FLOOR_Y, 5), hardMat);
+        helper.setBlock(new BlockPos(1, FLOOR_Y + 1, 1), softMat);
+        helper.setBlock(new BlockPos(5, FLOOR_Y + 1, 5), hardMat);
+
+        BlockPos soft = helper.absolutePos(new BlockPos(1, FLOOR_Y + 1, 1));
+        BlockPos hard = helper.absolutePos(new BlockPos(5, FLOOR_Y + 1, 5));
+        helper.assertTrue(Integrity.place(level, reg, soft) != null, "dirt was not structural");
+        helper.assertTrue(Integrity.place(level, reg, hard) != null, "stone bricks were not structural");
+
+        int softNat = Integrity.naturalOf(level, soft, level.getBlockState(soft));
+        int hardNat = Integrity.naturalOf(level, hard, level.getBlockState(hard));
+        helper.assertTrue(softNat <= threshold && hardNat > threshold,
+                "this test needs one material on each side of holdSpentUpToNatural="
+                        + threshold + ", but " + softMat + " is natural " + softNat
+                        + " and " + hardMat + " is natural " + hardNat
+                        + " - adjust the config in run/config or pick other blocks");
+
+        // Spent by hand, then queued the way SIEvents.enforce queues a row that has
+        // reached failAt. Same tick, same worklist, opposite outcomes.
+        reg.set(soft, SIConfig.failAt());
+        reg.set(hard, SIConfig.failAt());
+        SIFall.queueDestroy(level, soft);
+        SIFall.queueDestroy(level, hard);
+
+        AtomicBoolean logged = new AtomicBoolean(false);
+        helper.succeedWhen(() -> {
+            boolean softStands = level.getBlockState(soft).getBlock() == softMat;
+            boolean hardGone = level.getBlockState(hard).isAir();
+            helper.assertTrue(softStands,
+                    softMat + " is natural " + softNat + ", at or below holdSpentUpToNatural="
+                            + threshold + ", so it must be held spent - it was destroyed");
+            helper.assertTrue(hardGone,
+                    hardMat + " is natural " + hardNat + ", above holdSpentUpToNatural="
+                            + threshold + ", so it must be destroyed - it is still standing");
+            if (logged.compareAndSet(false, true)) {
+                StructuralIntegrity.LOGGER.info(
+                        "[SI-TEST] HOLD-THRESHOLD threshold={} | {} nat={} stands={}"
+                                + " | {} nat={} destroyed={}",
+                        threshold, softMat, softNat, softStands, hardMat, hardNat, hardGone);
+            }
+        });
     }
 
     /**

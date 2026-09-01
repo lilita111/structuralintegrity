@@ -257,14 +257,17 @@ public final class SIFall {
         // are not original breaks and must not become wave origins themselves.
         Set<BlockPos> waveBroken = WAVE_BROKEN.computeIfAbsent(level, l -> new HashSet<>());
         int failAt = SIConfig.failAt();
-        boolean breakOnLoss = SIConfig.breakOnIntegrityLoss();
         boolean shockwave = SIConfig.breakShockwave();
         while (!work.isEmpty()) {
             BlockPos pos = work.poll();
             if (!done.add(pos) || !Integrity.isStructural(level, pos, null)) {
                 continue; // already handled or already gone
             }
-            if (!breakOnLoss) {
+            // Asked per position, not once for the pass: holdSpentUpToNatural is a
+            // threshold on the material, and this worklist mixes them freely - a
+            // collapse that spends a dirt block and the stone lintel above it holds
+            // the first and destroys the second in the same loop.
+            if (Integrity.holdsWhenSpent(level, pos)) {
                 // The block stays in the world, pinned spent. It stops conducting
                 // support (collect() treats spent rows as gaps), so whatever it was
                 // holding detaches around it. No break happened, so no splintering.

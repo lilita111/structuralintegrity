@@ -105,20 +105,37 @@ public final class SIConfig {
                     "neighbours only, cascading.")
             .define("breakShockwave", true);
 
-    private static final ModConfigSpec.BooleanValue BREAK_ON_INTEGRITY_LOSS = B
-            .comment("What becomes of a block that integrity loss drives down to failAt.",
-                    "false, the default since 0.6.6: the block stays exactly where it is,",
-                    "pinned at failAt, and stops carrying load. It becomes a hole in the",
-                    "support graph - nothing reaches ground through a spent block - so",
-                    "whatever it was holding is disconnected and detaches into a sub-level",
-                    "around it. The structure still comes down; the block that gave way is",
-                    "simply still there, spent, instead of being consumed. Nothing splinters",
-                    "and breakShockwave never fires for these, because no break happened to",
+    private static final ModConfigSpec.IntValue HOLD_SPENT_UP_TO_NATURAL = B
+            .comment("What becomes of a block that integrity loss drives down to failAt,",
+                    "decided per material instead of world-wide. Replaces the old",
+                    "breakOnIntegrityLoss switch in 0.7.1.",
+                    "A block whose natural integrity - its naturalintegrityreg entry, looked",
+                    "up by block id, not its current worn value - is at or below this number",
+                    "is HELD. It stays exactly where it is, pinned at failAt, and stops",
+                    "carrying load. It becomes a hole in the support graph, so whatever it",
+                    "was holding is disconnected and detaches into a sub-level around it. The",
+                    "structure still comes down; the block that gave way is simply still",
+                    "there, spent, instead of being consumed. Nothing splinters and",
+                    "breakShockwave never fires for these, because no break happened to",
                     "propagate from.",
-                    "true: the failing block is destroyed outright, which is what shipped",
-                    "through 0.6.5. The same collapse follows, but the block is lost and its",
-                    "break wears same-type neighbours.")
-            .define("breakOnIntegrityLoss", false);
+                    "Anything ABOVE this number is destroyed outright, which is what every",
+                    "block did through 0.6.5. The same collapse follows, but the block is",
+                    "lost and its break wears same-type neighbours.",
+                    "Mind the scale before changing this - natural integrity is not a 0-10",
+                    "rating. The shipped data map spans 0 to 160 - stone is 32, cobblestone 20 -",
+                    "and anything with no row derives from hardness, up to a ceiling of 1024.",
+                    "The default 2 therefore holds soil and nothing else: dirt is 1, sand and",
+                    "gravel are 2, and the next material up is grass_block at 4. Soil slumps",
+                    "into rubble and everything structural still shatters.",
+                    "Two values are the old switch. 0 holds nothing at all, since anything",
+                    "structural is at least natural 1, and is the old true. 1024 holds",
+                    "everything including unbreakable blocks, and is the old false.",
+                    "One caveat at low settings: defaultFragileIntegrity gives every",
+                    "collision-less block with no data map row - torches, rails, levers - a",
+                    "natural of 1, so they are held by any setting of 1 or more. Raise that",
+                    "key instead if you want them to break, but note it also changes how much",
+                    "load they carry.")
+            .defineInRange("holdSpentUpToNatural", Integrity.HOLD_SPENT_UP_TO_NATURAL, 0, 1024);
 
     private static final ModConfigSpec.BooleanValue REVERSE_INTEGRITY_ON_BREAK = B
             .comment("true: destroying a block runs the chain in reverse - the same walk from",
@@ -454,8 +471,9 @@ public final class SIConfig {
         return !SPEC.isLoaded() || BREAK_SHOCKWAVE.get();
     }
 
-    public static boolean breakOnIntegrityLoss() {
-        return !SPEC.isLoaded() || BREAK_ON_INTEGRITY_LOSS.get();
+    public static int holdSpentUpToNatural() {
+        return SPEC.isLoaded() ? HOLD_SPENT_UP_TO_NATURAL.get()
+                : Integrity.HOLD_SPENT_UP_TO_NATURAL;
     }
 
     public static int failAt() {

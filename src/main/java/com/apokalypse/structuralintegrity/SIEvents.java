@@ -214,7 +214,7 @@ public final class SIEvents {
     /**
      * The one break criterion: the wbireg row itself at or below zero breaks the
      * block, through the same next-tick destroy pipeline as any spent block
-     * (splinter, breakStrongerBlock and breakOnIntegrityLoss all apply), and the
+     * (splinter, breakStrongerBlock and holdSpentUpToNatural all apply), and the
      * fall pass then detaches whatever it was holding. The hang-adjusted tooltip
      * number is display only - the real accounting already happened when each
      * hanging block's placement chain charged this row. What this closes is the
@@ -284,7 +284,7 @@ public final class SIEvents {
         StructuralIntegrity.LOGGER.info("[SI] {} at {} | evaluated={} candidates={} wbireg={} in {}us",
                 trigger, fmt(origin), primary.size(), candidates.size(), reg.size(), micros);
         if (placed != null) {
-            StructuralIntegrity.LOGGER.info("[SI]   {}", placeLine(placed));
+            StructuralIntegrity.LOGGER.info("[SI]   {}", placeLine(level, placed));
         }
         if (!disturbed.isEmpty()) {
             StringBuilder sb = new StringBuilder("[SI]   disturbed out of ground:");
@@ -305,7 +305,7 @@ public final class SIEvents {
         }
         StringBuilder chat = new StringBuilder("[SI] ").append(trigger);
         if (placed != null) {
-            chat.append(' ').append(placeLine(placed));
+            chat.append(' ').append(placeLine(level, placed));
         }
         Integrity.Result worst = worst(primary, candidates);
         if (worst != null) {
@@ -315,7 +315,7 @@ public final class SIEvents {
         player.sendSystemMessage(Component.literal(chat.toString()));
     }
 
-    private static String placeLine(Integrity.Placed p) {
+    private static String placeLine(ServerLevel level, Integrity.Placed p) {
         StringBuilder sb = new StringBuilder("placed nat=").append(p.natural())
                 .append(" -> stored=").append(p.assigned());
         if (p.support() == null) {
@@ -337,7 +337,28 @@ public final class SIEvents {
             for (BlockPos f : p.failed()) {
                 sb.append(' ').append(fmt(f));
             }
-            sb.append(" (spent; destroyed next tick)");
+            // Asked, not assumed. This line said "destroyed next tick" unconditionally
+            // until 0.7.1, so from 0.6.6 - when breaking went off by default - it
+            // promised a destruction SIFall never performed, 24 times in one session.
+            // holdSpentUpToNatural now decides per material, so the answer can differ
+            // between two blocks that failed on the same tick and the line says so.
+            // Safe to ask here: the pass runs during the place event, before SIFall's
+            // next-tick sweep, so every failed position is still the block it was.
+            int held = 0;
+            for (BlockPos f : p.failed()) {
+                if (Integrity.holdsWhenSpent(level, f)) {
+                    held++;
+                }
+            }
+            int lost = p.failed().size() - held;
+            if (lost == 0) {
+                sb.append(" (spent; held, load shed)");
+            } else if (held == 0) {
+                sb.append(" (spent; destroyed next tick)");
+            } else {
+                sb.append(" (spent; ").append(held).append(" held, ")
+                        .append(lost).append(" destroyed next tick)");
+            }
         }
         return sb.toString();
     }

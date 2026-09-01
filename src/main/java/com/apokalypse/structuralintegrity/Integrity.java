@@ -67,6 +67,12 @@ public final class Integrity {
      * cracked state - loaded to its last point, still standing.
      */
     public static final int FAIL_AT = 0;
+    /**
+     * Default for {@link SIConfig#holdSpentUpToNatural}. Holds soil and nothing
+     * else: dirt is natural 1, sand and gravel are 2, and the next material up
+     * is grass_block at 4.
+     */
+    public static final int HOLD_SPENT_UP_TO_NATURAL = 2;
 
     private static final Direction[] DIRS = Direction.values();
 
@@ -1020,15 +1026,43 @@ public final class Integrity {
     }
 
     /**
-     * True when the block is standing but no longer carries anything:
-     * breakOnIntegrityLoss=false pinned it at failAt instead of destroying it.
-     * A raw row read - never materialises a row, and always false while the
-     * config still breaks spent blocks.
+     * Does this material stand when spent, or break outright?
+     *
+     * The single answer to a question three places ask separately: {@link SIFall}
+     * deciding whether to destroy a block that just failed, {@link #isSpent}
+     * deciding whether a block still standing at failAt conducts anything, and
+     * SIEvents deciding what to report. If those three disagreed a block would be
+     * held by one and treated as gone by another - the same split
+     * {@link #conductsLoad} closed in 0.7.0, one level further down.
+     *
+     * This reads naturalintegrityreg by block id, so it is a property of the
+     * MATERIAL and not of this position's wear: a stone block holds or breaks
+     * identically whether it is fresh or one point from failing. Since 0.7.1 the
+     * config is a threshold rather than a switch, so soil can linger as rubble
+     * while everything structural above it still shatters.
      */
-    public static boolean isSpent(WbiReg reg, BlockPos pos) {
-        return !SIConfig.breakOnIntegrityLoss()
-                && !reg.isAnchor(pos)
-                && reg.get(pos) <= SIConfig.failAt();
+    public static boolean holdsWhenSpent(ServerLevel level, BlockPos pos) {
+        return naturalOf(level, pos, level.getBlockState(pos))
+                <= SIConfig.holdSpentUpToNatural();
+    }
+
+    /**
+     * True when the block is standing but no longer carries anything: it reached
+     * failAt and its material is one {@link #holdsWhenSpent} keeps rather than
+     * destroys. False for a material that breaks instead, because such a block is
+     * gone rather than spent.
+     *
+     * The two raw row reads come first deliberately. This sits under
+     * {@link #conductsLoad} and so runs on every step of every graph walk, while
+     * {@link #holdsWhenSpent} costs a blockstate fetch and a data map lookup. Nearly
+     * every position asked is an anchor or is still above failAt, and those bail
+     * out on a hashmap read before the expensive question is reached. Never
+     * materialises a row.
+     */
+    public static boolean isSpent(ServerLevel level, WbiReg reg, BlockPos pos) {
+        return !reg.isAnchor(pos)
+                && reg.get(pos) <= SIConfig.failAt()
+                && holdsWhenSpent(level, pos);
     }
 
     /**
@@ -1080,11 +1114,13 @@ public final class Integrity {
      * block can be perfectly solid and still carry nothing, because integrity loss
      * has already spent it.
      *
-     * A spent block (breakOnIntegrityLoss=false pinned it at failAt instead of
-     * destroying it) stands, fills its space and keeps a room sealed, but it is
-     * rubble: nothing reaches ground through it and nothing hangs off it. That is
-     * the whole point of leaving it there rather than deleting it - the structure
-     * it was holding comes down around a block that is still visibly present.
+     * A spent block (holdSpentUpToNatural kept it at failAt instead of destroying
+     * it) stands, fills its space and keeps a room sealed, but it is rubble:
+     * nothing reaches ground through it and nothing hangs off it. That is the
+     * whole point of leaving it there rather than deleting it - the structure it
+     * was holding comes down around a block that is still visibly present. Which
+     * materials do this is {@link #holdsWhenSpent}, a threshold on natural
+     * integrity rather than the world-wide switch it was before 0.7.1.
      *
      * This is one method because the rule used to be written three different ways.
      * {@link #chain} enforced it by breaking the walk the moment a block hit
@@ -1103,7 +1139,7 @@ public final class Integrity {
      */
     public static boolean conductsLoad(ServerLevel level, WbiReg reg, BlockPos pos,
                                        @Nullable BlockPos ghost) {
-        return isStructural(level, pos, ghost) && !isSpent(reg, pos);
+        return isStructural(level, pos, ghost) && !isSpent(level, reg, pos);
     }
 
     /**
