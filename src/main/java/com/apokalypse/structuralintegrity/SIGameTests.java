@@ -138,6 +138,7 @@ public final class SIGameTests {
         };
 
         AtomicBoolean everAssembled = new AtomicBoolean(false);
+        AtomicBoolean censusLogged = new AtomicBoolean(false);
 
         helper.onEachTick(() -> {
             ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
@@ -173,6 +174,36 @@ public final class SIGameTests {
                     : container.getAllSubLevels().stream().filter(ownedByThisTest).count();
             helper.assertTrue(everAssembled.get() && ownSubLevels == 0,
                     "waiting for revert: everAssembled=" + everAssembled.get() + " ownSubLevels=" + ownSubLevels);
+
+            // The piece has landed and become blocks again. With
+            // subLevelsFloatWhenReconverted off - the default since 0.7.0 - the landing
+            // mints no ground, so every block that came back must still be tracked.
+            // Anything above the floor reading as ANCHOR is SIFall's reg.clear() path
+            // having run, which is exactly the behaviour being switched off: an anchor
+            // never fails, so a collapse would be leaving permanent terrain behind it.
+            // The floor itself is deliberately untouched and therefore ground, hence
+            // starting above it.
+            List<BlockPos> minted = new ArrayList<>();
+            for (int x = 0; x < TEMPLATE_SIZE_X; x++) {
+                for (int y = FLOOR_Y + 1; y < TEMPLATE_SIZE_Y; y++) {
+                    for (int z = 0; z < TEMPLATE_SIZE_Z; z++) {
+                        BlockPos world = helper.absolutePos(new BlockPos(x, y, z));
+                        if (!level.getBlockState(world).isAir() && reg.isAnchor(world)) {
+                            minted.add(world);
+                        }
+                    }
+                }
+            }
+            if (censusLogged.compareAndSet(false, true)) {
+                StructuralIntegrity.LOGGER.info(
+                        "[SI-TEST] revertOnLanding landed-anchor census: {} block(s) above the"
+                                + " floor read as ANCHOR after the revert {}",
+                        minted.size(), minted);
+            }
+            helper.assertTrue(minted.isEmpty(),
+                    "the landing minted ground: " + minted.size() + " block(s) above the floor"
+                            + " read as ANCHOR " + minted + " - subLevelsFloatWhenReconverted"
+                            + " must leave landed blocks tracked");
         });
     }
 

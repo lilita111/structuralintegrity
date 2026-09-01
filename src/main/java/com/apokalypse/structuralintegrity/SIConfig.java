@@ -346,12 +346,21 @@ public final class SIConfig {
             .defineInRange("restCheckTicks", 20, 1, 1200);
 
     private static final ModConfigSpec.BooleanValue SUBLEVELS_FLOAT_WHEN_RECONVERTED = B
-            .comment("true: blocks a landed sub-level converts back become anchors (ground),",
-                    "but only where they touch an existing anchor; the rest land tracked",
-                    "at natural and the landing is re-checked.",
-                    "false: they re-enter the world at their natural integrity, tracked, and",
-                    "are immediately re-checked - an ungrounded landing falls again.")
-            .define("subLevelsFloatWhenReconverted", true);
+            .comment("Whether a landing is allowed to mint new ground.",
+                    "false, the default since 0.7.0: it never is. Every block a landed",
+                    "sub-level converts back re-enters the world tracked at its own natural",
+                    "integrity, and the landing is re-checked next tick - a pile that cannot",
+                    "reach real ground from where it stopped simply falls again. Debris stays",
+                    "debris, and nothing a collapse drops turns into terrain.",
+                    "true: a landed block becomes an anchor wherever a neighbour outside the",
+                    "landed set is pre-existing structure - its row is cleared, and an",
+                    "untracked position reads as ground. The rest land tracked at natural.",
+                    "That was the behaviour through 0.6.6, and because an anchor never fails",
+                    "it meant a collapse could leave a heap of freshly minted, permanently",
+                    "unbreakable-by-integrity ground lying against whatever it fell on. The",
+                    "gametest suite watched it happen: 4/4 landed blocks touch the standing",
+                    "world, so every block of that reverted piece became ground.")
+            .define("subLevelsFloatWhenReconverted", false);
 
     public static final ModConfigSpec SPEC = B.build();
 
@@ -511,7 +520,7 @@ public final class SIConfig {
     }
 
     public static boolean subLevelsFloatWhenReconverted() {
-        return !SPEC.isLoaded() || SUBLEVELS_FLOAT_WHEN_RECONVERTED.get();
+        return SPEC.isLoaded() && SUBLEVELS_FLOAT_WHEN_RECONVERTED.get();
     }
 
     public static boolean forceScalesWithMass() {
