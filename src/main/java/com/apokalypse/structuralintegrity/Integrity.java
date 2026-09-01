@@ -100,7 +100,28 @@ public final class Integrity {
      *
      * @param trace the path it walked, {@code x,y,z=value} per step, for the log
      */
-    public record Chained(int count, List<BlockPos> failed, boolean capped, String trace) {}
+    public record Chained(int count, List<BlockPos> failed, boolean capped, String trace,
+                          List<Touched> touched) {}
+
+    /**
+     * One block a {@link #chain} pass actually rewrote, and by how much.
+     *
+     * {@code applied} is the SIGNED difference the row really moved by, measured
+     * after every clamp the walk applies - not the delta that was asked for. A
+     * sideways link doubles the charge, a material boundary hands the whole deficit
+     * across, and the floor at {@code failAt} truncates whatever is left; so the
+     * block a caller charged "-1" may have moved -2, or -1 when it asked for -2.
+     * Recording the real movement is what lets {@link #restoreTouched} put the
+     * structure back exactly as it was rather than approximately.
+     *
+     * Only rows whose stored value CHANGED are recorded. A block the walk visited
+     * but left untouched - already at natural on a relax, already spent on a charge
+     * - has nothing to give back.
+     */
+    public record Touched(BlockPos pos, int applied) {}
+
+    /** What one {@link #restoreTouched} pass gave back. */
+    public record Restored(int count, int skipped, String trace) {}
 
     /**
      * What holds a block up: the neighbour with the most left in it.
@@ -279,6 +300,22 @@ public final class Integrity {
     public static Chained chain(ServerLevel level, WbiReg reg, BlockPos start,
                                 @Nullable BlockPos origin, @Nullable Set<BlockPos> excluded,
                                 int delta) {
+        return chain(level, reg, start, origin, excluded, delta, false);
+    }
+
+    /**
+     * {@link #chain} that can hand back the blocks it rewrote.
+     *
+     * @param returnList when true, {@link Chained#touched()} lists every row the
+     *                   walk changed together with the signed amount it moved by,
+     *                   for a caller that means to undo the pass later. When false
+     *                   the list comes back empty and nothing is recorded, so the
+     *                   existing callers pay nothing for the feature.
+     */
+    public static Chained chain(ServerLevel level, WbiReg reg, BlockPos start,
+                                @Nullable BlockPos origin, @Nullable Set<BlockPos> excluded,
+                                int delta, boolean returnList) {
+        List<Touched> touched = returnList ? new ArrayList<>() : null;
         List<BlockPos> failed = new ArrayList<>();
         Set<BlockPos> visited = new HashSet<>();
         StringBuilder trace = new StringBuilder();
@@ -378,6 +415,9 @@ public final class Integrity {
             }
             if (now != stored) {
                 reg.set(cur, now);
+                if (touched != null) {
+                    touched.add(new Touched(cur, now - stored));
+                }
             }
             count++;
             if (trace.length() > 0) {
@@ -421,7 +461,56 @@ public final class Integrity {
             prev = cur;
             cur = next;
         }
-        return new Chained(count, failed, capped, trace.toString());
+        return new Chained(count, failed, capped, trace.toString(),
+                touched == null ? List.of() : touched);
+    }
+
+    /**
+     * Give back exactly what a {@code returnList} {@link #chain} pass took.
+     *
+     * Each row moves by the negation of the amount recorded for it, so a block the
+     * walk charged -2 gets +2 and one it charged -1 gets +1. A flat +1 per position
+     * would be wrong here and wrong in a way that only shows up over hours of play:
+     * the sideways doubling means a block carrying a span is charged twice per pass,
+     * so a flat restore would leave one point of permanent wear behind every single
+     * time, and a player walking around their own house would eventually collapse it
+     * without ever touching a block.
+     *
+     * A row is skipped when its block is gone or has become ground since the charge -
+     * the shock may well have knocked it down, and there is nothing to hand back to a
+     * hole. The natural cap still applies, so a restore can never overshoot into
+     * strengthening a structure past what its material allows.
+     */
+    public static Restored restoreTouched(ServerLevel level, WbiReg reg, List<Touched> touched) {
+        StringBuilder trace = new StringBuilder();
+        int count = 0;
+        int skipped = 0;
+        for (Touched t : touched) {
+            BlockPos pos = t.pos();
+            if (t.applied() == 0) {
+                continue;
+            }
+            if (!isStructural(level, pos, null) || isAnchor(level, reg, pos)) {
+                skipped++;
+                continue;
+            }
+            int natural = naturalOf(level, pos, level.getBlockState(pos));
+            int stored = storedAt(level, reg, pos);
+            int now = Math.min(stored - t.applied(), Math.max(stored, natural));
+            if (now == stored) {
+                skipped++;
+                continue;
+            }
+            reg.set(pos, now);
+            count++;
+            if (trace.length() > 0) {
+                trace.append(" -> ");
+            }
+            trace.append(pos.getX()).append(',').append(pos.getY()).append(',')
+                    .append(pos.getZ()).append('=').append(now)
+                    .append("(+").append(-t.applied()).append(')');
+        }
+        return new Restored(count, skipped, trace.toString());
     }
 
     /**

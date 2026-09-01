@@ -4,7 +4,9 @@
   "package": "com.apokalypse.structuralintegrity.mixin",
   "plugin": "com.apokalypse.structuralintegrity.mixin.SIMixinPlugin",
   "compatibilityLevel": "JAVA_21",
-  "mixins": [],
+  "mixins": [
+    "ServerLevelPlotLightMixin"
+  ],
   "client": [
     "GoggleOverlayMixin"
   ],

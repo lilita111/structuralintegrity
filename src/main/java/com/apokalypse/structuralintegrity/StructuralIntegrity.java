@@ -34,6 +34,7 @@ public class StructuralIntegrity {
         NeoForge.EVENT_BUS.register(SIEvents.class);
         NeoForge.EVENT_BUS.register(SIFall.class);
         NeoForge.EVENT_BUS.register(SIPlayerImpact.class);
+        NeoForge.EVENT_BUS.register(SIJumpShock.class);
         LOGGER.info("[SI] integrity = stored; the placement cost lives in stored now, so hang is "
                 + "reported but no longer charged; ground = no wbireg row (max+1)");
         LOGGER.info("[SI] every block has an entry: datamap row first, else derived from hardness "
@@ -60,6 +61,8 @@ public class StructuralIntegrity {
         LOGGER.info("[SI] snap: the chain stops at the first spent block; config picks which side of the snap breaks");
         LOGGER.info("[SI] falling: a component that cannot reach ground is assembled by sable, up to {} blocks",
                 SIFall.MAX_ASSEMBLY);
+        LOGGER.info("[SI] jump shock: landing on a tracked block charges -{} down its support chain, held for {} tick(s) and then handed back exactly",
+                SIConfig.jumpShockLoad(), SIConfig.jumpShockRecoveryTicks());
         LOGGER.info("[SI] reads never write: goggle queries and region floods peek, only the solver's "
                 + "write paths materialise wbireg rows; never_anchor blocks enter tracking at first write");
     }

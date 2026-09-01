@@ -1066,4 +1066,145 @@ public final class SIGameTests {
         int derived = (int) Math.round(SIConfig.defaultIntegrity() * Math.sqrt(effective / 1.5));
         return Math.min(1024, Math.max(2, derived));
     }
+
+    // =====================================================================
+    // 0.7.3 - the jump shock
+    // =====================================================================
+
+    /**
+     * A landing that the structure survives must leave it EXACTLY as it was.
+     *
+     * The order the test runs in. First a cantilevered ledge is built off a cliff,
+     * because a ledge is the shape that pays the sideways doubling and so the shape
+     * where a flat +1 restore would silently under-restore. Then every wbireg row
+     * this test built is written down. Then the landing charge is run - the same
+     * {@link Integrity#chain} call {@link SIJumpShock} makes - asking for the list
+     * of rows it rewrote. Then that list is checked for at least one row that moved
+     * by more than the single point asked for; if none did, the ledge is not
+     * exercising the doubling and the rest of the test proves nothing, so that is an
+     * assertion rather than an observation. Then the recorded amounts are handed
+     * back, and every row must read exactly what it read before the landing.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void jumpShockRestoresExactly(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+        Block mat = Blocks.STONE;
+
+        // Ground under the cliff, left untouched so it reads as anchor.
+        for (int x = FLOOR_MIN; x <= FLOOR_MIN + 5; x++) {
+            helper.setBlock(new BlockPos(x, FLOOR_Y, LEDGE_Z), mat);
+        }
+        // The cliff face the ledge springs from.
+        for (int y = FLOOR_Y + 1; y <= LEDGE_Y; y++) {
+            BlockPos local = new BlockPos(FLOOR_MIN, y, LEDGE_Z);
+            helper.setBlock(local, mat);
+            Integrity.place(level, reg, helper.absolutePos(local));
+        }
+        // The ledge itself: every block out charges the innermost twice.
+        List<BlockPos> ledge = new ArrayList<>();
+        for (int i = 0; i <= REACH_STEPS; i++) {
+            BlockPos local = new BlockPos(FLOOR_MIN + 1 + i, LEDGE_Y, LEDGE_Z);
+            helper.setBlock(local, mat);
+            BlockPos abs = helper.absolutePos(local);
+            Integrity.Placed placed = Integrity.place(level, reg, abs);
+            helper.assertTrue(placed != null, "ledge step " + i + " was not structural");
+            ledge.add(abs);
+        }
+
+        // The tip of the ledge is what a player would land on.
+        BlockPos landed = ledge.get(ledge.size() - 1);
+        helper.assertTrue(!Integrity.isAnchor(level, reg, landed),
+                "the landing block is ground - this test would measure nothing");
+
+        Map<BlockPos, Integer> before = new TreeMap<>(
+                java.util.Comparator.comparingLong(BlockPos::asLong));
+        for (BlockPos p : ledge) {
+            before.put(p, reg.get(p));
+        }
+        for (int y = FLOOR_Y + 1; y <= LEDGE_Y; y++) {
+            BlockPos abs = helper.absolutePos(new BlockPos(FLOOR_MIN, y, LEDGE_Z));
+            before.put(abs, reg.get(abs));
+        }
+
+        Integrity.Chained shock = Integrity.chain(level, reg, landed, null, null, -1, true);
+        StructuralIntegrity.LOGGER.info("[SI-TEST] JUMP shock -1 touched {} row(s), chain {}: {}",
+                shock.touched().size(), shock.count(), shock.trace());
+        helper.assertTrue(!shock.touched().isEmpty(),
+                "the landing charge changed no row at all");
+
+        int worst = 0;
+        for (Integrity.Touched t : shock.touched()) {
+            StructuralIntegrity.LOGGER.info("[SI-TEST]   touched {},{},{} by {}",
+                    t.pos().getX(), t.pos().getY(), t.pos().getZ(), t.applied());
+            worst = Math.min(worst, t.applied());
+        }
+        helper.assertTrue(worst <= -2,
+                "no row on this ledge was charged more than the -1 asked for (worst was " + worst
+                        + ") - the sideways doubling is not being exercised, so this test cannot "
+                        + "show that a flat restore would be wrong");
+
+        Integrity.Restored restored = Integrity.restoreTouched(level, reg, shock.touched());
+        StructuralIntegrity.LOGGER.info("[SI-TEST] JUMP recover gave back {} row(s), skipped {}: {}",
+                restored.count(), restored.skipped(), restored.trace());
+
+        for (Map.Entry<BlockPos, Integer> e : before.entrySet()) {
+            int now = reg.get(e.getKey());
+            helper.assertTrue(now == e.getValue(),
+                    "row " + e.getKey().getX() + "," + e.getKey().getY() + "," + e.getKey().getZ()
+                            + " was " + e.getValue() + " before the landing and is " + now
+                            + " after the recovery - a survived landing must cost nothing");
+        }
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] JUMP SHOCK no-op confirmed across {} row(s)", before.size());
+        helper.succeed();
+    }
+
+    /**
+     * A landing on a structure already one point from failing must spend it.
+     *
+     * The support under the landing block is driven down to one above {@code failAt}
+     * by hand rather than by building something enormous, so the test states the
+     * precondition it is testing instead of hoping some shape happens to produce it.
+     * Then a single point of landing load is enough to run it out, and the chain must
+     * report it failed - that report is the only thing between a weak floor and a
+     * player walking across it forever.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void jumpShockSpendsAnAlreadyWeakSupport(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+        Block mat = Blocks.STONE;
+
+        for (int x = FLOOR_MIN; x <= FLOOR_MIN + 3; x++) {
+            helper.setBlock(new BlockPos(x, FLOOR_Y, PILLAR_Z), mat);
+        }
+        BlockPos supportLocal = new BlockPos(PILLAR_X, FLOOR_Y + 1, PILLAR_Z);
+        BlockPos landedLocal = new BlockPos(PILLAR_X, FLOOR_Y + 2, PILLAR_Z);
+        helper.setBlock(supportLocal, mat);
+        helper.setBlock(landedLocal, mat);
+        BlockPos support = helper.absolutePos(supportLocal);
+        BlockPos landed = helper.absolutePos(landedLocal);
+        Integrity.place(level, reg, support);
+        Integrity.place(level, reg, landed);
+
+        int failAt = SIConfig.failAt();
+        reg.set(landed, failAt + 1);
+        reg.set(support, failAt + 1);
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] JUMP weak-floor precondition: landed={} support={} failAt={}",
+                reg.get(landed), reg.get(support), failAt);
+
+        Integrity.Chained shock = Integrity.chain(level, reg, landed, null, null, -1, true);
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] JUMP shock on weak floor: {} failed, touched {}: {}",
+                shock.failed().size(), shock.touched().size(), shock.trace());
+        helper.assertTrue(!shock.failed().isEmpty(),
+                "a landing on a support one point from failAt did not spend it");
+
+        Integrity.Restored restored = Integrity.restoreTouched(level, reg, shock.touched());
+        StructuralIntegrity.LOGGER.info("[SI-TEST] JUMP recover after a spend: {} back, {} skipped",
+                restored.count(), restored.skipped());
+        helper.succeed();
+    }
 }

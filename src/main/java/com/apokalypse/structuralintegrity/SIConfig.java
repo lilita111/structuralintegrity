@@ -250,6 +250,57 @@ public final class SIConfig {
                     "rock a building; a jump lands at roughly 0.5 and should.")
             .defineInRange("playerImpactMinSpeed", 0.15, 0.0, 4.0);
 
+    // ---- the weight of a person on a floor ---------------------------------
+
+    private static final ModConfigSpec.BooleanValue JUMP_SHOCK_ENABLED = B
+            .comment("Whether landing on a structure loads it. A player who jumps onto a tracked",
+                    "block sends a charge down whatever carries it, exactly as if a block had",
+                    "been placed there, and then the charge is handed back a moment later. A",
+                    "sound floor never notices; a floor that was already one point from failing",
+                    "gives way underfoot, which is the whole point of the mechanism. Off, a",
+                    "player weighs nothing to the world and only ever loads it by building.")
+            .define("jumpShockEnabled", true);
+
+    private static final ModConfigSpec.IntValue JUMP_SHOCK_LOAD = B
+            .comment("How many points of integrity a landing spends while the player is standing",
+                    "there. 1 is a person; raising it makes a floor that survives being built",
+                    "fail the moment anyone walks onto it, which is a different game. The charge",
+                    "travels the same support chain a placement does, so a span still pays the",
+                    "sideways doubling and a pillar still pays once per block.")
+            .defineInRange("jumpShockLoad", 1, 0, 64);
+
+    private static final ModConfigSpec.IntValue JUMP_SHOCK_RECOVERY_TICKS = B
+            .comment("How long, in ticks, the landing load stays on the structure before it is",
+                    "handed back. 20 is one second: long enough that a building already at its",
+                    "limit has a real window in which to come down, short enough that walking",
+                    "about does not accumulate. Every point taken is given back exactly, so this",
+                    "is a window and not a cost - a structure that survives the second is in the",
+                    "state it started in. 0 restores on the very next tick.")
+            .defineInRange("jumpShockRecoveryTicks", 20, 0, 12000);
+
+    private static final ModConfigSpec.DoubleValue JUMP_SHOCK_MIN_FALL_DISTANCE = B
+            .comment("How far a player must have fallen, in blocks, for the landing to load the",
+                    "structure. A standing jump peaks at about 1.25, stepping down off a slab is",
+                    "about 0.5, and simply walking is 0. The default lets a step down count and",
+                    "ignores flat ground; raise it past 1.3 to make only real falls load a",
+                    "floor, or drop it to 0 to have every landing of any kind count.")
+            .defineInRange("jumpShockMinFallDistance", 0.5, 0.0, 256.0);
+
+    // ---- sable ------------------------------------------------------------
+
+    private static final ModConfigSpec.BooleanValue FIX_SUB_LEVEL_SKY_LIGHT = B
+            .comment("Whether to force sky light on for freshly created sable sub-level chunks.",
+                    "Sable builds a plot chunk with its light-correct flag cleared and then asks",
+                    "the light engine to honour that flag, so a sub-level that has just been",
+                    "assembled is created with sky light DISABLED and ships all-zero sky data to",
+                    "every client tracking it - which is why a falling roof renders under a",
+                    "permanent night no matter what time it actually is. Sable's own reload path",
+                    "does the opposite: a saved sub-level restores its flag from NBT as true",
+                    "before lighting, so reloaded pieces light correctly and only fresh ones are",
+                    "dark. This makes a fresh plot behave the way a reloaded one already does.",
+                    "Only has any effect with sable installed.")
+            .define("fixSubLevelSkyLight", true);
+
     // ---- ground that stopped being ground ----------------------------------
 
     private static final ModConfigSpec.IntValue ENCLOSURE_CHECK_CHANCE = B
@@ -599,6 +650,26 @@ public final class SIConfig {
 
     public static double playerImpactMinSpeed() {
         return SPEC.isLoaded() ? PLAYER_IMPACT_MIN_SPEED.get() : 0.15;
+    }
+
+    public static boolean jumpShockEnabled() {
+        return !SPEC.isLoaded() || JUMP_SHOCK_ENABLED.get();
+    }
+
+    public static int jumpShockLoad() {
+        return SPEC.isLoaded() ? JUMP_SHOCK_LOAD.get() : 1;
+    }
+
+    public static int jumpShockRecoveryTicks() {
+        return SPEC.isLoaded() ? JUMP_SHOCK_RECOVERY_TICKS.get() : 20;
+    }
+
+    public static double jumpShockMinFallDistance() {
+        return SPEC.isLoaded() ? JUMP_SHOCK_MIN_FALL_DISTANCE.get() : 0.5;
+    }
+
+    public static boolean fixSubLevelSkyLight() {
+        return !SPEC.isLoaded() || FIX_SUB_LEVEL_SKY_LIGHT.get();
     }
 
     public static int enclosureCheckChance() {
