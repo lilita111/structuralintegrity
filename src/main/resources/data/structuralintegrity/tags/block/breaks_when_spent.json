@@ -1,0 +1,22 @@
+{
+  "replace": false,
+  "values": [
+    "#minecraft:leaves",
+    "#minecraft:wool_carpets",
+    "#minecraft:candles",
+    "#minecraft:candle_cakes",
+    "minecraft:moss_carpet",
+    "minecraft:cake",
+    "minecraft:hay_block",
+    "minecraft:ladder",
+    "minecraft:cocoa",
+    "minecraft:turtle_egg",
+    "minecraft:glass",
+    "minecraft:small_amethyst_bud",
+    "minecraft:medium_amethyst_bud",
+    "minecraft:large_amethyst_bud",
+    "minecraft:amethyst_cluster",
+    { "id": "#c:glass_panes", "required": false },
+    { "id": "#c:glass_blocks", "required": false }
+  ]
+}
