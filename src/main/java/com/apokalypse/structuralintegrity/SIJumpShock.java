@@ -5,6 +5,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.entity.living.LivingFallEvent;
+import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.ArrayDeque;
@@ -154,7 +155,21 @@ public final class SIJumpShock {
         }
     }
 
-    /** Drop everything pending - a level unload must not restore into a dead level. */
+    /**
+     * Drop everything pending when the server stops.
+     *
+     * The queue holds live {@link ServerLevel} references, and in single player the
+     * server stops every time the player quits to the menu. Without this, a landing
+     * left mid-recovery would sit in the queue across that boundary and then hand
+     * its points back into a level that no longer exists - or, worse, tick down
+     * against the NEXT world's clock and write rows into it.
+     */
+    @SubscribeEvent
+    public static void onServerStopped(ServerStoppedEvent event) {
+        clear();
+    }
+
+    /** Drop everything pending. */
     public static void clear() {
         if (!PENDING.isEmpty()) {
             StructuralIntegrity.LOGGER.info("[SI] JUMP SHOCK dropped {} pending recovery/recoveries",
