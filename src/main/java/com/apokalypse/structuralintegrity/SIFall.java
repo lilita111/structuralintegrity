@@ -113,6 +113,30 @@ public final class SIFall {
     }
 
     /**
+     * Collapse kick to use at a given anchor instead of the configured one:
+     * {@code {force, torque}}.
+     *
+     * A test seam, and the only one in this file. The two halves of the fall cycle
+     * want opposite settings - the spin test needs a definite kick to measure, the
+     * revert test needs none at all so its piece can land square - and neither should
+     * break when the shipped default is retuned, which it has been more than once.
+     * Each test pins the numbers it is actually about.
+     *
+     * Keyed by anchor rather than held as a global switch on purpose. The gametest
+     * server runs every test concurrently in one shared level, so a global override
+     * set by one test would silently reach into another running beside it. An anchor
+     * belongs to exactly one test.
+     *
+     * Consumed on use, so it can never leak into a second collapse at the same spot.
+     */
+    private static final Map<BlockPos, double[]> KICK_OVERRIDES = new HashMap<>();
+
+    /** Test-only. See {@link #KICK_OVERRIDES}. Pass zeroes to suppress the kick. */
+    public static void overrideCollapseKickAt(BlockPos anchor, double force, double torque) {
+        KICK_OVERRIDES.put(anchor.immutable(), new double[] {force, torque});
+    }
+
+    /**
      * Positions an assembly has already been attempted at, and the tick it happened.
      *
      * A successful assembly is supposed to empty the world of those blocks. When it
@@ -125,6 +149,13 @@ public final class SIFall {
 
     /** How long an anchor is held off after an assembly attempt. */
     public static final int ASSEMBLY_COOLDOWN_TICKS = 40;
+
+    /**
+     * Blocks a shockwave spent. They are queued for the next destroy pass, and
+     * this marker is what stops them emitting a wave of their own when it runs -
+     * one wave per original break, across ticks. Consumed as each is destroyed.
+     */
+    private static final Map<ServerLevel, Set<BlockPos>> WAVE_BROKEN = new HashMap<>();
 
     /** Guards against a re-entrant assembly triggering itself through block updates. */
     private static boolean running;
@@ -169,17 +200,42 @@ public final class SIFall {
         PENDING_FALL.clear();
         SPLINTER_PROTECTED.clear();
 
+        // Original integrity breaks this pass, per level - shockwave candidates.
+        // The wave is deferred: whether it fires depends on what the fall pass
+        // finds, which has not run yet at destroy time.
+        Map<ServerLevel, List<BlockPos>> waveOrigins = new HashMap<>();
+
+        Map<ServerLevel, Integer> assembled = new HashMap<>();
         running = true;
         try {
             for (Map.Entry<ServerLevel, LinkedHashSet<BlockPos>> e : destroy.entrySet()) {
                 runDestroy(e.getKey(), e.getValue(), fall,
-                        shielded.getOrDefault(e.getKey(), Set.of()));
+                        shielded.getOrDefault(e.getKey(), Set.of()), waveOrigins);
             }
             for (Map.Entry<ServerLevel, LinkedHashSet<BlockPos>> e : fall.entrySet()) {
-                runFall(e.getKey(), e.getValue());
+                assembled.put(e.getKey(), runFall(e.getKey(), e.getValue()));
             }
         } finally {
             running = false;
+        }
+
+        // The shockwave fires only when the break detached nothing: a sub-level
+        // carried the energy away. Runs after `running` drops so wave-spent
+        // blocks queue into the NEXT destroy pass, marked so they never emit.
+        for (Map.Entry<ServerLevel, List<BlockPos>> e : waveOrigins.entrySet()) {
+            ServerLevel level = e.getKey();
+            int subLevels = assembled.getOrDefault(level, 0);
+            if (subLevels > 0) {
+                StructuralIntegrity.LOGGER.info(
+                        "[SI] SHOCKWAVE suppressed in {}: {} detached component(s) this pass",
+                        level.dimension().location(), subLevels);
+                continue;
+            }
+            WbiReg reg = WbiReg.of(level);
+            for (BlockPos origin : e.getValue()) {
+                runShockwave(level, reg, origin, SIConfig.failAt(),
+                        shielded.getOrDefault(level, Set.of()));
+            }
         }
     }
 
@@ -190,14 +246,19 @@ public final class SIFall {
      */
     private static void runDestroy(ServerLevel level, Set<BlockPos> positions,
                                    Map<ServerLevel, LinkedHashSet<BlockPos>> fall,
-                                   Set<BlockPos> shielded) {
+                                   Set<BlockPos> shielded,
+                                   Map<ServerLevel, List<BlockPos>> waveOrigins) {
         WbiReg reg = WbiReg.of(level);
-        // Worklist, not a plain loop: splintering can spend a neighbour, and that
-        // neighbour's own break must splinter in turn, in this same pass.
+        // Worklist, not a plain loop: wear can spend further blocks, and those
+        // must be destroyed in this same pass.
         java.util.ArrayDeque<BlockPos> work = new java.util.ArrayDeque<>(positions);
         Set<BlockPos> done = new HashSet<>();
+        // Blocks a previous pass's shockwave spent: they break here, but they
+        // are not original breaks and must not become wave origins themselves.
+        Set<BlockPos> waveBroken = WAVE_BROKEN.computeIfAbsent(level, l -> new HashSet<>());
         int failAt = SIConfig.failAt();
         boolean breakOnLoss = SIConfig.breakOnIntegrityLoss();
+        boolean shockwave = SIConfig.breakShockwave();
         while (!work.isEmpty()) {
             BlockPos pos = work.poll();
             if (!done.add(pos) || !Integrity.isStructural(level, pos, null)) {
@@ -224,6 +285,21 @@ public final class SIFall {
                     fmt(pos), ok ? "removed" : "FAILED", reg.size());
             // Broken indirectly, by integrity. Same roll as a player's own break.
             SIEnclosure.maybeCheck(level, reg, pos);
+            if (shockwave) {
+                // Deferred: recorded here, fired (or suppressed) after the fall
+                // pass has said whether this break detached anything.
+                if (!waveBroken.remove(pos)) {
+                    waveOrigins.computeIfAbsent(level, l -> new ArrayList<>()).add(pos.immutable());
+                }
+                for (Direction d : Direction.values()) {
+                    BlockPos n = pos.relative(d);
+                    if (Integrity.isStructural(level, n, null)) {
+                        // Whatever it was carrying has just lost its support.
+                        fall.computeIfAbsent(level, l -> new LinkedHashSet<>()).add(n.immutable());
+                    }
+                }
+                continue;
+            }
             for (Direction d : Direction.values()) {
                 BlockPos n = pos.relative(d);
                 if (!Integrity.isStructural(level, n, null)) {
@@ -257,17 +333,80 @@ public final class SIFall {
         }
     }
 
-    private static void runFall(ServerLevel level, Set<BlockPos> seeds) {
+    /**
+     * The shockwave: one original integrity break wears the whole connected
+     * structure by 1. The flood starts at the broken block's neighbours (the
+     * block itself is already air), travels faces across structural blocks, does
+     * not expand through ground - an anchor is where the structure ends - and
+     * gives up at the maxRegion cap, reported.
+     *
+     * Wear only, never an entry write: an untracked block conducts the wave but
+     * takes nothing from it, and so does a block whose natural integrity is 1 -
+     * torches, leaves, loose material are transparent to it. Snap-shielded
+     * positions are skipped for the same reason they are shielded from splinter.
+     *
+     * The wave may break: a row driven to failAt is queued for the NEXT destroy
+     * pass, marked wave-broken so it emits no wave of its own when it goes.
+     */
+    private static void runShockwave(ServerLevel level, WbiReg reg, BlockPos origin, int failAt,
+                                     Set<BlockPos> shielded) {
+        Set<BlockPos> visited = new HashSet<>();
+        java.util.ArrayDeque<BlockPos> queue = new java.util.ArrayDeque<>();
+        for (Direction d : Direction.values()) {
+            BlockPos n = origin.relative(d).immutable();
+            if (Integrity.isStructural(level, n, null) && visited.add(n)) {
+                queue.add(n);
+            }
+        }
+
+        int maxRegion = SIConfig.maxRegion();
+        int worn = 0;
+        int broke = 0;
+        while (!queue.isEmpty() && visited.size() < maxRegion) {
+            BlockPos p = queue.poll();
+            boolean anchor = reg.isAnchor(p);
+            if (!anchor && !shielded.contains(p)
+                    && Integrity.naturalOf(level, p, level.getBlockState(p)) > 1) {
+                int stored = reg.get(p);
+                int now = Math.max(failAt, stored - 1);
+                if (now != stored) {
+                    reg.set(p, now);
+                    worn++;
+                }
+                if (now <= failAt) {
+                    broke++;
+                    WAVE_BROKEN.computeIfAbsent(level, l -> new HashSet<>()).add(p);
+                    queueDestroy(level, p);
+                }
+            }
+            if (anchor) {
+                continue; // ground: the wave lands in it and goes no further
+            }
+            for (Direction d : Direction.values()) {
+                BlockPos n = p.relative(d).immutable();
+                if (Integrity.isStructural(level, n, null) && visited.add(n)) {
+                    queue.add(n);
+                }
+            }
+        }
+        StructuralIntegrity.LOGGER.info("[SI] SHOCKWAVE from {} reached {} blocks, wore {}, broke {}{}",
+                fmt(origin), visited.size(), worn, broke,
+                visited.size() >= maxRegion ? " (CAPPED)" : "");
+    }
+
+    /** @return how many detached components this pass found - assembled or not */
+    private static int runFall(ServerLevel level, Set<BlockPos> seeds) {
         ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
         if (container == null) {
             StructuralIntegrity.LOGGER.warn("[SI] fall skipped in {}: sable has no sub-level container here",
                     level.dimension().location());
-            return;
+            return 0;
         }
 
         WbiReg reg = WbiReg.of(level);
         Set<BlockPos> handled = new HashSet<>();
         int checked = 0;
+        int detached = 0;
         int fell = 0;
 
         for (BlockPos seed : seeds) {
@@ -287,6 +426,7 @@ public final class SIFall {
                 continue; // seed was air, ground, or fluid by the time we got here
             }
             handled.addAll(comp.blocks());
+            detached++;
 
             if (comp.capped()) {
                 StructuralIntegrity.LOGGER.warn(
@@ -306,6 +446,7 @@ public final class SIFall {
             StructuralIntegrity.LOGGER.info("[SI] fall pass in {}: seeds={} checked={} assembled={} wbireg={}",
                     level.dimension().location(), seeds.size(), checked, fell, reg.size());
         }
+        return detached;
     }
 
     /**
@@ -376,12 +517,25 @@ public final class SIFall {
         OWNED_SUB_LEVELS.add(subLevel);
         ASSEMBLED_AT.put(subLevel, anchor.immutable());
 
-        // The piece has just lost whatever was under it. Push it away from the
-        // failure so it topples instead of sinking straight down in place.
-        double collapse = SIConfig.collapseForce();
-        if (collapse > 0.0) {
-            SIForce.apply(subLevel, SIForce.toppleDirection(anchor, blocks), collapse);
+        // The piece has just lost whatever was under it. Send it away from the failure
+        // so it topples instead of sinking straight down in place, and set it turning
+        // about the axis that carries its top over the way it is already leaning -
+        // masonry that shears off a wall rolls, only a launched block travels without
+        // spinning. Both at once, and by SIForce#kick rather than an impulse: the body
+        // was assembled microseconds ago and has no mass properties yet, so an impulse
+        // divides by zero inverse mass and arrives as nothing. Every piece this mod has
+        // ever dropped fell straight down for that reason, landed square, and was
+        // reverted to ordinary blocks by the alignment check the tick after.
+        double[] override = KICK_OVERRIDES.remove(anchor);
+        double kickForce = override != null ? override[0] : SIConfig.collapseForce();
+        double kickTorque = override != null ? override[1] : SIConfig.collapseTorque();
+        if (override != null) {
+            StructuralIntegrity.LOGGER.info("[SI] collapse kick overridden at {}: force={} torque={} (test)",
+                    fmt(anchor), kickForce, kickTorque);
         }
+        SIForce.kick(subLevel,
+                SIForce.toppleDirection(anchor, blocks), kickForce,
+                SIForce.tumbleAxis(anchor, blocks), kickTorque);
 
         StructuralIntegrity.LOGGER.info("[SI] SUBLEVEL created at {} n={} bounds=[{},{},{} .. {},{},{}]",
                 fmt(anchor), blocks.size(),
@@ -520,19 +674,8 @@ public final class SIFall {
 
         Vector3d worldAnchor = worldAnchorOf(subLevel);
 
-        Vector3d up = pose.orientation().transform(new Vector3d(0, 1, 0));
         Integer angle = alignedYawAngle(pose.orientation());
         boolean nearCenter = isNearBlockCenter(worldAnchor);
-
-        // TEMP DEBUG (SIGameTests stage 3 investigation) - remove once revert is confirmed working.
-        StructuralIntegrity.LOGGER.info(
-                "[SI-DEBUG] tryRevert subLevel={} upDist={} angle={} worldAnchor=({},{},{}) fracs=({},{},{}) nearCenter={}",
-                System.identityHashCode(subLevel), up.distance(0, 1, 0), angle,
-                worldAnchor.x, worldAnchor.y, worldAnchor.z,
-                worldAnchor.x - Math.floor(worldAnchor.x),
-                worldAnchor.y - Math.floor(worldAnchor.y),
-                worldAnchor.z - Math.floor(worldAnchor.z),
-                nearCenter);
 
         if (angle == null || !nearCenter) {
             return;

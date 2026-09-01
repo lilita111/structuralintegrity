@@ -99,12 +99,7 @@ public final class SIForce {
         double localScale = scale / localLen;
 
         Vector3d impulse = new Vector3d(local.x * localScale, local.y * localScale, local.z * localScale);
-        Vector3d before = handle.getLinearVelocity(new Vector3d());
         handle.applyLinearImpulse(impulse);
-        Vector3d after = handle.getLinearVelocity(new Vector3d());
-        StructuralIntegrity.LOGGER.info("[SI-DIAG] linear v before=({},{},{}) after=({},{},{}) mass={}",
-                fmt(before.x), fmt(before.y), fmt(before.z), fmt(after.x), fmt(after.y), fmt(after.z),
-                fmt(subLevel.getMassTracker().getMass()));
 
         StructuralIntegrity.LOGGER.info("[SI] FORCE sub-level={} worldDir=({},{},{}) magnitude={} "
                         + "-> localImpulse=({},{},{})",
@@ -174,14 +169,7 @@ public final class SIForce {
         double localScale = scale / localLen;
 
         Vector3d torque = new Vector3d(local.x * localScale, local.y * localScale, local.z * localScale);
-        Vector3d wBefore = handle.getAngularVelocity(new Vector3d());
         handle.applyTorqueImpulse(torque);
-        Vector3d wAfter = handle.getAngularVelocity(new Vector3d());
-        var inertia = subLevel.getMassTracker().getInverseInertiaTensor();
-        StructuralIntegrity.LOGGER.info("[SI-DIAG] angular w before=({},{},{}) after=({},{},{}) "
-                        + "invInertiaDiag=({},{},{})",
-                fmt(wBefore.x), fmt(wBefore.y), fmt(wBefore.z), fmt(wAfter.x), fmt(wAfter.y), fmt(wAfter.z),
-                fmt(inertia.m00()), fmt(inertia.m11()), fmt(inertia.m22()));
 
         StructuralIntegrity.LOGGER.info("[SI] TORQUE sub-level={} worldAxis=({},{},{}) magnitude={} "
                         + "-> localTorque=({},{},{})",
@@ -189,6 +177,97 @@ public final class SIForce {
                 fmt(worldUnit.x), fmt(worldUnit.y), fmt(worldUnit.z),
                 fmt(magnitude), fmt(torque.x), fmt(torque.y), fmt(torque.z));
         return true;
+    }
+
+    /**
+     * Set a sub-level moving and turning at the moment it is born, which is the one
+     * moment an impulse cannot do it.
+     *
+     * {@link #apply} and {@link #applyTorque} hand rapier an impulse, and rapier
+     * divides an impulse by the body's mass and moment of inertia to get the velocity
+     * change. That works on a body that has been alive a while. It does nothing at all
+     * on a body assembled this tick: sable builds the collider at zero density and
+     * feeds the real mass in afterwards, so at assembly the engine still has a cached
+     * inverse mass and inverse inertia of zero, and anything divided by them comes out
+     * as no motion whatsoever. The log says so plainly - the identical call reads
+     * {@code before=(0,0,0) after=(0,0,0)} against a mass of 8, then moves the same
+     * body by forty metres a second once it has settled. It is not a matter of the
+     * number being too small; nothing is arriving.
+     *
+     * So a newborn body is kicked rather than pushed, which is exactly what sable
+     * itself does in the same situation: when it splits one sub-level off another, the
+     * piece inherits its parent's motion through
+     * {@code SubLevelAssemblyHelper.kickFromContainingSubLevel}, and that adds
+     * velocity directly instead of applying an impulse. Rapier's
+     * {@code addLinearAndAngularVelocity} is a plain {@code set_linvel(linvel + v)} and
+     * {@code set_angvel(angvel + w)} - it never consults mass or inertia, so there is
+     * nothing to be zero, and it never rotates its arguments, so both are world-space
+     * and need none of the pose conversion an impulse needs.
+     *
+     * The trade is that mass is genuinely ignored: a four-block chunk and a
+     * four-hundred-block wall leave at the same speed. For a collapse that is closer to
+     * right than the alternative anyway, because both are in free fall regardless.
+     *
+     * @param subLevel  the body to set moving
+     * @param direction which way it travels, in WORLD space, any length
+     * @param speed     how fast, in m/s. Not scaled by mass, and
+     *                  {@code forceScalesWithMass} does not apply here - there is no
+     *                  impulse to scale.
+     * @param axis      which way it turns, in WORLD space, right-handed, any length
+     * @param spin      how fast it turns, in rad/s. A real angular speed, unlike
+     *                  {@link #applyTorque}'s magnitude: 2.5 is about two fifths of a
+     *                  turn a second.
+     * @return true if anything was actually handed to the physics engine
+     */
+    public static boolean kick(ServerSubLevel subLevel, Vec3 direction, double speed,
+                               Vec3 axis, double spin) {
+        RigidBodyHandle handle = RigidBodyHandle.of(subLevel);
+        if (handle == null || !handle.isValid()) {
+            StructuralIntegrity.LOGGER.warn("[SI] kick skipped: no valid rigid body handle for sub-level {}",
+                    System.identityHashCode(subLevel));
+            return false;
+        }
+
+        Vector3d linear = scaledOrZero(direction, speed);
+        Vector3d angular = scaledOrZero(axis, spin);
+        if (linear.lengthSquared() == 0.0 && angular.lengthSquared() == 0.0) {
+            return false;
+        }
+
+        // Read back on both sides. This is the only evidence that the kick landed -
+        // the whole reason this method exists is that the call it replaces reported
+        // success while changing nothing.
+        Vector3d vBefore = handle.getLinearVelocity(new Vector3d());
+        Vector3d wBefore = handle.getAngularVelocity(new Vector3d());
+        handle.addLinearAndAngularVelocity(linear, angular);
+        Vector3d vAfter = handle.getLinearVelocity(new Vector3d());
+        Vector3d wAfter = handle.getAngularVelocity(new Vector3d());
+
+        StructuralIntegrity.LOGGER.info("[SI] KICK sub-level={} mass={} v=({},{},{})->({},{},{}) "
+                        + "w=({},{},{})->({},{},{})",
+                System.identityHashCode(subLevel), fmt(subLevel.getMassTracker().getMass()),
+                fmt(vBefore.x), fmt(vBefore.y), fmt(vBefore.z),
+                fmt(vAfter.x), fmt(vAfter.y), fmt(vAfter.z),
+                fmt(wBefore.x), fmt(wBefore.y), fmt(wBefore.z),
+                fmt(wAfter.x), fmt(wAfter.y), fmt(wAfter.z));
+        return true;
+    }
+
+    /**
+     * A world direction rescaled to {@code magnitude}, or zero if there is nothing to
+     * scale - a zero magnitude, or a direction with no usable length to normalise.
+     */
+    private static Vector3d scaledOrZero(Vec3 direction, double magnitude) {
+        if (!(magnitude > 0.0)) {
+            return new Vector3d();
+        }
+        double len = direction.length();
+        if (!(len > MIN_DIRECTION_LENGTH) || !Double.isFinite(len)) {
+            StructuralIntegrity.LOGGER.warn("[SI] kick component skipped: {} has no usable length", direction);
+            return new Vector3d();
+        }
+        double s = magnitude / len;
+        return new Vector3d(direction.x * s, direction.y * s, direction.z * s);
     }
 
     /**

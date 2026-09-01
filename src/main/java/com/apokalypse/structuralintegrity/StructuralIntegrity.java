@@ -33,6 +33,7 @@ public class StructuralIntegrity {
         modBus.addListener(SIPayloads::register);
         NeoForge.EVENT_BUS.register(SIEvents.class);
         NeoForge.EVENT_BUS.register(SIFall.class);
+        NeoForge.EVENT_BUS.register(SIPlayerImpact.class);
         LOGGER.info("[SI] integrity = stored; the placement cost lives in stored now, so hang is "
                 + "reported but no longer charged; ground = no wbireg row (max+1)");
         LOGGER.info("[SI] every block has an entry: datamap row first, else derived from hardness "

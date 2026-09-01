@@ -105,6 +105,12 @@ public final class SIGameTests {
                 "[SI-TEST] revertOnLanding: floor y={} [{}..{}]x[{}..{}], cluster n={} at {}",
                 FLOOR_Y, FLOOR_MIN, FLOOR_MAX, FLOOR_MIN, FLOOR_MAX, clusterWorld.size(), clusterWorld);
 
+        // This test is about the LANDING half of the cycle: a piece that comes to rest
+        // square stops being a physics object and becomes blocks again. The collapse
+        // kick exists to stop pieces landing square, so it is turned off for this one
+        // fall - with it on, the piece tumbles and correctly never re-aligns, which is
+        // the behaviour collapseSpinsSubLevel is there to check.
+        SIFall.overrideCollapseKickAt(clusterWorld.get(0), 0.0, 0.0);
         SIFall.queueFall(level, clusterWorld.get(0));
 
         // World-space AABB of this test's own "empty" structure instance, expanded by a
@@ -237,6 +243,17 @@ public final class SIGameTests {
     private static final double SPIN_THRESHOLD = 0.05;
 
     /**
+     * The kick this test applies to its own piece, independent of what the mod ships.
+     *
+     * collapseTorque is a feel setting - it has already gone from "spins hard" to
+     * "does not spin at all" once - and whether the angular route still works is not
+     * a matter of taste. These are the numbers that were shipped when the route was
+     * fixed, kept here so the measurement survives any retune.
+     */
+    private static final double TEST_KICK_FORCE = 1.5;
+    private static final double TEST_KICK_TORQUE = 2.5;
+
+    /**
      * Does {@link SIForce#apply} actually reach sable's physics pipeline? A cluster
      * is dropped exactly as {@link #revertOnLanding} drops one, and the first tick
      * on which it exists as a sub-level it is shoved along +X. If the impulse lands,
@@ -358,6 +375,7 @@ public final class SIGameTests {
             reg.set(world, Integrity.naturalOf(level, world, level.getBlockState(world)));
         }
         BlockPos queuedAt = clusterWorld.get(0);
+        SIFall.overrideCollapseKickAt(queuedAt, TEST_KICK_FORCE, TEST_KICK_TORQUE);
         SIFall.queueFall(level, queuedAt);
 
         // Recomputed here from the same inputs assemble() will use, so the test knows
@@ -382,14 +400,6 @@ public final class SIGameTests {
                     if (queuedAt.equals(SIFall.assembledAt(sub))) {
                         own.set(sub);
                         seen.set(true);
-                        var mt = sub.getMassTracker();
-                        var it = mt.getInertiaTensor();
-                        var ii = mt.getInverseInertiaTensor();
-                        StructuralIntegrity.LOGGER.info(
-                                "[SI-DIAG] mass={} com={} inertiaDiag=({},{},{}) invInertiaDiag=({},{},{})",
-                                mt.getMass(), mt.getCenterOfMass(),
-                                it.m00(), it.m11(), it.m22(),
-                                ii.m00(), ii.m11(), ii.m22());
                         break;
                     }
                 }
@@ -398,10 +408,10 @@ public final class SIGameTests {
             if (sub == null) {
                 return;
             }
+            // Age, not tick: what matters is how long this body has existed, because a
+            // body younger than its own mass properties is exactly the case that used
+            // to swallow the spin silently.
             age[0]++;
-            // Pushed hard about +Y at two different ages, exactly as the linear
-            // diagnostic did: if a young body ignores torque but an older one takes
-            // it, the answer is timing; if neither lands, it is the body.
             Vec3 w = SIForce.angularVelocityOf(sub);
             Vec3 v = SIForce.linearVelocityOf(sub);
             double along = w.dot(axis);
@@ -662,6 +672,77 @@ public final class SIGameTests {
         helper.assertTrue(ledgeTip == natural / 2,
                 "a block set on the SIDE inherits half: expected " + (natural / 2)
                         + ", got " + ledgeTip);
+        helper.succeed();
+    }
+
+    /**
+     * The goggle read-out says the same thing the mod acts on.
+     *
+     * The number in the tooltip and the number that decides whether a block stands
+     * are computed in two different classes - {@link Integrity.Result#integrity()}
+     * on the server and {@link SIPayloads.Info#integrity()} over the wire - and they
+     * have already drifted apart once. The payload went on subtracting the hanging
+     * weight after the server stopped, so a perfectly healthy block read tens below
+     * zero in the goggles while the thing that actually broke it, stored, sat
+     * comfortably above failAt and was never shown at all. Nothing in the mod
+     * couples the two, so this pins them.
+     *
+     * A cantilevered ledge is the shape that exposes it. The innermost block carries
+     * a large ungrounded region on one face, so hangMax is big while stored is still
+     * healthy - which is precisely where the two formulas disagree most.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void goggleReadoutMatchesBreakCriterion(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+        Block mat = Blocks.STONE;
+
+        // Ground, and the cliff face the ledge springs from. Both left untouched so
+        // they read as WbiReg.ANCHOR and the ledge has something real to hang off.
+        for (int x = FLOOR_MIN; x <= FLOOR_MIN + 5; x++) {
+            helper.setBlock(new BlockPos(x, FLOOR_Y, LEDGE_Z), mat);
+        }
+        for (int y = FLOOR_Y + 1; y <= LEDGE_Y + 1; y++) {
+            helper.setBlock(new BlockPos(FLOOR_MIN, y, LEDGE_Z), mat);
+        }
+
+        BlockPos innerLocal = new BlockPos(FLOOR_MIN + 1, LEDGE_Y, LEDGE_Z);
+        for (int i = 0; i <= REACH_STEPS; i++) {
+            BlockPos local = new BlockPos(FLOOR_MIN + 1 + i, LEDGE_Y, LEDGE_Z);
+            helper.setBlock(local, mat);
+            helper.assertTrue(Integrity.place(level, reg, helper.absolutePos(local)) != null,
+                    "ledge step " + i + " was not structural");
+        }
+
+        BlockPos inner = helper.absolutePos(innerLocal);
+        Integrity.Result r = Integrity.compute(level, reg, inner);
+
+        // Built exactly the way SIPayloads.onQuery builds it, so what is asserted is
+        // the wire format the goggles actually read rather than a re-derivation of it.
+        int flags = SIPayloads.FLAG_STRUCTURAL
+                | (r.anchor() ? SIPayloads.FLAG_ANCHOR : 0)
+                | (r.grounded() ? SIPayloads.FLAG_GROUNDED : 0);
+        SIPayloads.Info info =
+                new SIPayloads.Info(inner, r.natural(), r.stored(), r.hangMax(), flags);
+
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] GOGGLE {}: natural={} stored={} hangMax={} hangSum={} grounded={}"
+                        + " -> server={} goggles={} (pre-0.6.6 formula would have shown {})",
+                innerLocal, r.natural(), r.stored(), r.hangMax(), r.hangSum(),
+                r.grounded(), r.integrity(), info.integrity(), r.stored() - r.hangMax());
+
+        helper.assertTrue(r.hangMax() > 0,
+                "test shape is wrong: the inner ledge block carries no hanging region, so a"
+                        + " hang-adjusted read-out would be indistinguishable from a correct one");
+        helper.assertTrue(info.integrity() == r.integrity(),
+                "goggles disagree with the server: tooltip would show " + info.integrity()
+                        + ", the mod acts on " + r.integrity());
+        helper.assertTrue(info.integrity() == r.stored(),
+                "the read-out is not the break criterion: shows " + info.integrity()
+                        + ", blocks break at stored <= " + SIConfig.failAt());
+        helper.assertTrue(info.integrity() > SIConfig.failAt(),
+                "a standing block read as already broken: " + info.integrity()
+                        + " <= failAt " + SIConfig.failAt());
         helper.succeed();
     }
 

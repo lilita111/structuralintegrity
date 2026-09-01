@@ -81,9 +81,26 @@ public final class SIPayloads {
             return (flags & FLAG_STRUCTURAL) != 0;
         }
 
-        /** The same number the log prints: stored minus the worst hanging face. */
+        /**
+         * What the block has left, and the only thing that decides whether it stands:
+         * the same number {@link Integrity.Result#integrity()} returns, the same one
+         * the server logs, and the same one it breaks on at
+         * {@code stored <= failAt}.
+         *
+         * Deliberately NOT hang-adjusted. It used to be, matching a server-side
+         * formula that subtracted the hanging weight here as well; when that double
+         * charge was removed from {@link Integrity.Result#integrity()} this copy was
+         * missed, and the goggles went on subtracting {@link #hang} - which is a
+         * COUNT OF BLOCKS, not integrity, and unbounded. The read-out ran tens below
+         * zero on a block in no danger whatsoever, never reached zero when a block
+         * actually failed, and printed it all as "x / natural" as though it were a
+         * fraction of the material's own rating.
+         *
+         * {@link #hang} is still sent and still shown - on its own line, as the block
+         * count it is.
+         */
         public int integrity() {
-            return stored - hang;
+            return stored;
         }
     }
 

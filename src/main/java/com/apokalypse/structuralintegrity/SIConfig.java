@@ -106,11 +106,19 @@ public final class SIConfig {
             .define("breakShockwave", true);
 
     private static final ModConfigSpec.BooleanValue BREAK_ON_INTEGRITY_LOSS = B
-            .comment("true: a block scheduled to break at failAt is destroyed (the current",
-                    "behaviour). false: the spent block stays in the world, pinned at failAt,",
-                    "and stops carrying load - whatever it was holding detaches into a",
-                    "sub-level around it. No block is lost and no splintering happens.")
-            .define("breakOnIntegrityLoss", true);
+            .comment("What becomes of a block that integrity loss drives down to failAt.",
+                    "false, the default since 0.6.6: the block stays exactly where it is,",
+                    "pinned at failAt, and stops carrying load. It becomes a hole in the",
+                    "support graph - nothing reaches ground through a spent block - so",
+                    "whatever it was holding is disconnected and detaches into a sub-level",
+                    "around it. The structure still comes down; the block that gave way is",
+                    "simply still there, spent, instead of being consumed. Nothing splinters",
+                    "and breakShockwave never fires for these, because no break happened to",
+                    "propagate from.",
+                    "true: the failing block is destroyed outright, which is what shipped",
+                    "through 0.6.5. The same collapse follows, but the block is lost and its",
+                    "break wears same-type neighbours.")
+            .define("breakOnIntegrityLoss", false);
 
     private static final ModConfigSpec.BooleanValue REVERSE_INTEGRITY_ON_BREAK = B
             .comment("true: destroying a block runs the chain in reverse - the same walk from",
@@ -156,15 +164,50 @@ public final class SIConfig {
             .defineInRange("collapseForce", 1.5, 0.0, 1024.0);
 
     private static final ModConfigSpec.DoubleValue COLLAPSE_TORQUE = B
-            .comment("How hard a piece is set spinning the moment integrity loss detaches it,",
+            .comment("How fast a piece is set spinning the moment integrity loss detaches it,",
                     "about the axis that makes its top lead in the direction it is already",
-                    "toppling. Deliberately larger than collapseForce: a piece that shears off",
-                    "a wall rolls away, it does not slide off flat.",
-                    "Not an angular speed. Rapier divides a torque impulse by the body's own",
-                    "moment of inertia, which grows faster than its mass, so one number spins a",
-                    "small lump briskly and a wide slab barely - which is the point. 0 disables",
-                    "it, independently of collapseForce.")
-            .defineInRange("collapseTorque", 2.5, 0.0, 1024.0);
+                    "toppling.",
+                    "Radians per second, applied directly to the body. It is NOT a torque",
+                    "impulse despite the name: a sub-level microseconds old has no mass",
+                    "properties yet, so an impulse is divided by an inverse mass rapier still",
+                    "has cached as zero and arrives as exactly nothing - which is what every",
+                    "collapse in this mod did before 0.6.4. Setting the velocity is how sable",
+                    "itself moves a newborn sub-level, and the trade is that mass and inertia",
+                    "are genuinely ignored here: a cathedral wall and a single block both take",
+                    "this number, where a real torque would have spun the small one faster.",
+                    "For scale, 2.5 is roughly a full rotation every two and a half",
+                    "seconds and reads as violent - that was the shipped value through 0.6.4",
+                    "and it spun every collapse hard enough that no piece ever landed square",
+                    "again. The default 0.05 is about three degrees a second, so a piece",
+                    "falling for two seconds turns some six degrees: enough to read as debris",
+                    "rather than a sliding block, and well inside snapOrientationEpsilon, so",
+                    "a piece that lands flat still re-aligns and reverts to blocks. That",
+                    "interaction is the real constraint on this number - anything fast enough",
+                    "to tumble a piece past the snap tolerance also stops it ever reverting.",
+                    "0 disables the roll outright; the collapse still shoves pieces sideways",
+                    "under collapseForce, which is independent.")
+            .defineInRange("collapseTorque", 0.05, 0.0, 1024.0);
+
+    private static final ModConfigSpec.BooleanValue PLAYER_IMPACT_ENABLED = B
+            .comment("Whether a player standing on a loose piece can move it - landing on one",
+                    "drives it down, jumping off it kicks it away underfoot. Off, a player is",
+                    "weightless to a sub-level and can walk across a falling roof unnoticed.")
+            .define("playerImpactEnabled", true);
+
+    private static final ModConfigSpec.DoubleValue PLAYER_IMPACT_MASS = B
+            .comment("What a player weighs when they hit a sub-level, on the same scale the",
+                    "physics engine masses blocks - and it masses them at about one apiece, so",
+                    "the default lands a player like a five-block lump rather than like a real",
+                    "human against real stone. The impulse handed over is this times the speed",
+                    "the player arrived at, so it is the one number that decides how much a",
+                    "person can shove. 0 makes them weightless without disabling the detection.")
+            .defineInRange("playerImpactMass", 5.0, 0.0, 1024.0);
+
+    private static final ModConfigSpec.DoubleValue PLAYER_IMPACT_MIN_SPEED = B
+            .comment("How fast a player must be travelling, in blocks per tick, for the landing",
+                    "to count. Stepping down off a stair is about 0.08 and should not visibly",
+                    "rock a building; a jump lands at roughly 0.5 and should.")
+            .defineInRange("playerImpactMinSpeed", 0.15, 0.0, 4.0);
 
     // ---- ground that stopped being ground ----------------------------------
 
@@ -470,6 +513,18 @@ public final class SIConfig {
 
     public static double collapseTorque() {
         return SPEC.isLoaded() ? COLLAPSE_TORQUE.get() : 2.5;
+    }
+
+    public static boolean playerImpactEnabled() {
+        return !SPEC.isLoaded() || PLAYER_IMPACT_ENABLED.get();
+    }
+
+    public static double playerImpactMass() {
+        return SPEC.isLoaded() ? PLAYER_IMPACT_MASS.get() : 5.0;
+    }
+
+    public static double playerImpactMinSpeed() {
+        return SPEC.isLoaded() ? PLAYER_IMPACT_MIN_SPEED.get() : 0.15;
     }
 
     public static int enclosureCheckChance() {
