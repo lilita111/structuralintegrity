@@ -314,13 +314,32 @@ public final class SIConfig {
 
     private static final ModConfigSpec.DoubleValue SNAP_POSITION_EPSILON = B
             .comment("How far a resting sub-level's anchor may sit from a block centre and",
-                    "still snap back into regular blocks.")
-            .defineInRange("snapPositionEpsilon", 0.2, 0.001, 0.5);
+                    "still snap back into regular blocks. In blocks.",
+                    "0.08 since 0.7.0, down from 0.2 - a fifth of a block is a visible",
+                    "offset, and a piece that snapped from there jumped noticeably as it",
+                    "reverted. Tighter means a piece has to come to rest closer to square,",
+                    "so the revert is invisible; the cost is that a piece which settles",
+                    "outside the tolerance never reverts at all and stays a physics body,",
+                    "because a resting body does not move again to drift back into range.",
+                    "Raise it if collapses leave debris lying around that should have",
+                    "become blocks.")
+            .defineInRange("snapPositionEpsilon", 0.08, 0.001, 0.5);
 
     private static final ModConfigSpec.DoubleValue SNAP_ORIENTATION_EPSILON = B
             .comment("How far a resting sub-level's rotated axes may miss the grid and still",
-                    "snap back into regular blocks.")
-            .defineInRange("snapOrientationEpsilon", 0.2, 0.001, 0.5);
+                    "snap back into regular blocks.",
+                    "A chord distance between unit vectors, not an angle: eps = 2*sin(t/2),",
+                    "so 0.2 was 11.5 degrees and 0.12, the default since 0.7.0, is 6.9.",
+                    "This number and collapseTorque are one setting in two halves. A piece",
+                    "spun at collapseTorque radians per second for a two second fall arrives",
+                    "0.1 radians (5.7 degrees, chord 0.100) out of true at the default 0.05,",
+                    "so 0.12 clears a typical collapse with a little room and nothing more.",
+                    "Tighten this below what the torque produces and pieces stop reverting",
+                    "entirely - that is exactly what the 2.5 torque shipped through 0.6.4",
+                    "did, 38 collapses and not one revert. If you want this near 0.035",
+                    "(2 degrees) then collapseTorque has to come down to about 0.015 in the",
+                    "same edit.")
+            .defineInRange("snapOrientationEpsilon", 0.12, 0.001, 0.5);
 
     private static final ModConfigSpec.IntValue REST_CHECK_TICKS = B
             .comment("How long after coming to rest a sub-level stays eligible to revert.")
@@ -480,11 +499,11 @@ public final class SIConfig {
     }
 
     public static double snapPositionEpsilon() {
-        return SPEC.isLoaded() ? SNAP_POSITION_EPSILON.get() : 0.2;
+        return SPEC.isLoaded() ? SNAP_POSITION_EPSILON.get() : 0.08;
     }
 
     public static double snapOrientationEpsilon() {
-        return SPEC.isLoaded() ? SNAP_ORIENTATION_EPSILON.get() : 0.2;
+        return SPEC.isLoaded() ? SNAP_ORIENTATION_EPSILON.get() : 0.12;
     }
 
     public static int restCheckTicks() {

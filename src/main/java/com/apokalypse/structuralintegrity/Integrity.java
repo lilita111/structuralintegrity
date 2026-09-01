@@ -140,7 +140,7 @@ public final class Integrity {
             if (exclude != null && exclude.contains(n)) {
                 continue;
             }
-            if (!isStructural(level, n, null)) {
+            if (!conductsLoad(level, reg, n, null)) {
                 continue;
             }
             if (d == Direction.DOWN) {
@@ -194,7 +194,7 @@ public final class Integrity {
             if (exclude != null && exclude.contains(n)) {
                 continue;
             }
-            if (!isStructural(level, n, null)) {
+            if (!conductsLoad(level, reg, n, null)) {
                 continue;
             }
             int at = peekAt(level, reg, n);
@@ -777,8 +777,7 @@ public final class Integrity {
      */
     public static Component collect(ServerLevel level, WbiReg reg, BlockPos seed,
                                     @Nullable BlockPos ghost, int max) {
-        if (!isStructural(level, seed, ghost) || isAnchor(level, reg, seed)
-                || isSpent(reg, seed)) {
+        if (!conductsLoad(level, reg, seed, ghost) || isAnchor(level, reg, seed)) {
             return new Component(List.of(), true, false);
         }
 
@@ -797,9 +796,7 @@ public final class Integrity {
             out.add(p);
             for (Direction dir : DIRS) {
                 BlockPos n = p.relative(dir);
-                // A spent block (breakOnIntegrityLoss=false) is a gap: it stands,
-                // but nothing reaches ground through it.
-                if (!isStructural(level, n, ghost) || isSpent(reg, n)) {
+                if (!conductsLoad(level, reg, n, ghost)) {
                     continue;
                 }
                 BlockPos ni = n.immutable();
@@ -859,7 +856,7 @@ public final class Integrity {
 
         for (Direction d : DIRS) {
             BlockPos n = pos.relative(d);
-            if (!isStructural(level, n, ghost)) {
+            if (!conductsLoad(level, reg, n, ghost)) {
                 faces.add(new Face(d, 0, false, false));
                 continue;
             }
@@ -926,7 +923,7 @@ public final class Integrity {
             out.count++;
             for (Direction dir : DIRS) {
                 BlockPos n = p.relative(dir);
-                if (n.equals(origin) || !isStructural(level, n, ghost)) {
+                if (n.equals(origin) || !conductsLoad(level, reg, n, ghost)) {
                     continue;
                 }
                 if (visited.add(n)) {
@@ -1075,6 +1072,45 @@ public final class Integrity {
     }
 
     /**
+     * Does load travel through this block?
+     *
+     * The question every graph walk in this class is really asking, and it is not
+     * the same as {@link #isStructural}. That one is about MATERIAL: air, fluids and
+     * plants are outside the system and always were. This one is about STATE - a
+     * block can be perfectly solid and still carry nothing, because integrity loss
+     * has already spent it.
+     *
+     * A spent block (breakOnIntegrityLoss=false pinned it at failAt instead of
+     * destroying it) stands, fills its space and keeps a room sealed, but it is
+     * rubble: nothing reaches ground through it and nothing hangs off it. That is
+     * the whole point of leaving it there rather than deleting it - the structure
+     * it was holding comes down around a block that is still visibly present.
+     *
+     * This is one method because the rule used to be written three different ways.
+     * {@link #chain} enforced it by breaking the walk the moment a block hit
+     * failAt, {@link #collect} enforced it with an inline {@link #isSpent} test,
+     * and {@link #fill}, {@link #compute}'s face scan and both support finders did
+     * not enforce it at all - so a spent block stopped conducting for sub-level
+     * detection while still being chosen as something's footing. One predicate now
+     * answers it everywhere the walk asks.
+     *
+     * Deliberately NOT used for the material questions, which have their own
+     * answers. A spent block still walls in a region for {@link SIEnclosure}, still
+     * splinters as a same-type neighbour of a break, still needs its fall checked
+     * by {@link SIFall}, and is still a legal thing to build against: a block set
+     * on one inherits its zero and is spent in turn, which is the correct cascade
+     * and wants no special case.
+     */
+    public static boolean conductsLoad(ServerLevel level, WbiReg reg, BlockPos pos,
+                                       @Nullable BlockPos ghost) {
+        return isStructural(level, pos, ghost) && !isSpent(reg, pos);
+    }
+
+    /**
+     * Is this block part of the system at all? A question about MATERIAL only -
+     * {@link #conductsLoad} is the one that also asks whether the block still has
+     * anything left to give, and is what the load-bearing walks want.
+     *
      * Air, fluids and plants are outside the system - not structure, carrying no
      * load and transmitting none. Plants are anything growing: {@link BushBlock}
      * covers flowers, saplings, crops, grass and mushrooms - a class, not a list,

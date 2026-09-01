@@ -676,6 +676,80 @@ public final class SIGameTests {
     }
 
     /**
+     * A spent block stands, and stops carrying.
+     *
+     * This is the whole of breakOnIntegrityLoss=false, which became the default in
+     * 0.6.6 and had no coverage: a block driven to failAt is left in the world
+     * rather than destroyed, and what it was holding is expected to come away
+     * around it. The block staying put is easy to see; the load actually shedding
+     * is not, because it depends on every graph walk agreeing that rubble conducts
+     * nothing. They did not agree before 0.7.0 - the sub-level walk skipped spent
+     * blocks while both support finders were happy to choose one as a footing - so
+     * this asserts the block is still there, that nothing picks it as support, and
+     * that what sat on it has genuinely lost its route to ground.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void spentBlockStandsAndShedsLoad(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+        Block mat = Blocks.STONE;
+
+        // isSpent is hard-wired to return false while the config still destroys
+        // failing blocks, so with the key the other way round every assertion below
+        // would be testing nothing and passing anyway. Say so out loud rather than
+        // letting a config drift read as a green run.
+        helper.assertTrue(!SIConfig.breakOnIntegrityLoss(),
+                "this test covers breakOnIntegrityLoss=false, the default since 0.6.6,"
+                        + " but the loaded config has it true - spent blocks do not exist"
+                        + " in that mode and there is nothing here to check");
+
+        // Ground: never routed through Integrity.place, so it reads as WbiReg.ANCHOR.
+        helper.setBlock(new BlockPos(3, FLOOR_Y, 3), mat);
+
+        // A four block pillar on it, each charged in properly so it owns a row.
+        List<BlockPos> pillar = new ArrayList<>();
+        for (int i = 1; i <= 4; i++) {
+            BlockPos local = new BlockPos(3, FLOOR_Y + i, 3);
+            helper.setBlock(local, mat);
+            BlockPos abs = helper.absolutePos(local);
+            helper.assertTrue(Integrity.place(level, reg, abs) != null,
+                    "pillar block " + i + " was not structural");
+            pillar.add(abs);
+        }
+
+        BlockPos spent = pillar.get(1);
+        BlockPos above = pillar.get(2);
+        BlockPos top = pillar.get(3);
+
+        helper.assertTrue(Integrity.isConnectedToAnchor(level, reg, top, null),
+                "the pillar was not grounded before anything was spent - bad fixture");
+
+        // Exactly what SIFall does to a block it declines to destroy.
+        reg.set(spent, SIConfig.failAt());
+
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] SPENT-SHED spent={} stored={} structural={} conducts={}"
+                        + " supportOf(above)={} topGrounded={} blockStillThere={}",
+                spent, reg.get(spent), Integrity.isStructural(level, spent, null),
+                Integrity.conductsLoad(level, reg, spent, null),
+                Integrity.supportOf(level, reg, above, null),
+                Integrity.isConnectedToAnchor(level, reg, top, null),
+                level.getBlockState(spent).getBlock() == mat);
+
+        helper.assertTrue(level.getBlockState(spent).getBlock() == mat,
+                "the spent block was destroyed - breakOnIntegrityLoss=false must leave it");
+        helper.assertTrue(Integrity.isStructural(level, spent, null),
+                "a spent block is still a block: isStructural must stay true");
+        helper.assertTrue(!Integrity.conductsLoad(level, reg, spent, null),
+                "a spent block must not conduct load");
+        helper.assertTrue(!spent.equals(Integrity.supportOf(level, reg, above, null)),
+                "the block above chose the spent block as its support");
+        helper.assertTrue(!Integrity.isConnectedToAnchor(level, reg, top, null),
+                "the pillar above the spent block still reaches ground - load did not shed");
+        helper.succeed();
+    }
+
+    /**
      * The goggle read-out says the same thing the mod acts on.
      *
      * The number in the tooltip and the number that decides whether a block stands
