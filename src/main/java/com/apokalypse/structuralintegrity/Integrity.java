@@ -1040,10 +1040,54 @@ public final class Integrity {
      * identically whether it is fresh or one point from failing. Since 0.7.1 the
      * config is a threshold rather than a switch, so soil can linger as rubble
      * while everything structural above it still shatters.
+     *
+     * Since 0.7.2 the threshold is not the only voice. It answers "how much load
+     * does this material carry", and that turned out to be a different question
+     * from "does this material slump or shatter" - see {@link SITags#BREAKS_WHEN_SPENT}
+     * for the leaves case that separated them. Two vetoes now sit above the
+     * number and both win when they fire.
      */
     public static boolean holdsWhenSpent(ServerLevel level, BlockPos pos) {
-        return naturalOf(level, pos, level.getBlockState(pos))
-                <= SIConfig.holdSpentUpToNatural();
+        return dispositionWhenSpent(level, pos) == SpentDisposition.HELD;
+    }
+
+    /**
+     * What becomes of a block sitting at failAt, and why.
+     *
+     * An enum rather than a reason string because {@link #isSpent} sits under
+     * {@link #conductsLoad} and asks this on every step of every graph walk. The
+     * log site formats it; the hot path allocates nothing.
+     */
+    public enum SpentDisposition {
+        /** Held in place at failAt, still standing, carrying nothing. */
+        HELD,
+        /** Natural integrity is above holdSpentUpToNatural - destroyed, as always. */
+        ABOVE_THRESHOLD,
+        /** Inside the band but in {@link SITags#BREAKS_WHEN_SPENT}, which vetoes holding. */
+        TAGGED_BREAKS,
+        /** Inside the band but has no collision shape, and breakFragileWhenSpent is on. */
+        FRAGILE
+    }
+
+    /**
+     * The threshold is asked first, and deliberately so. For a block with a data
+     * map row {@link #naturalOf} returns on a single holder read, and the answer
+     * settles the overwhelming majority of positions - anything structural sits
+     * far above the band. Only a block that WOULD be held pays for the two vetoes
+     * below it, and only the second of those costs a collision shape query.
+     */
+    public static SpentDisposition dispositionWhenSpent(ServerLevel level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        if (naturalOf(level, pos, state) > SIConfig.holdSpentUpToNatural()) {
+            return SpentDisposition.ABOVE_THRESHOLD;
+        }
+        if (state.is(SITags.BREAKS_WHEN_SPENT)) {
+            return SpentDisposition.TAGGED_BREAKS;
+        }
+        if (SIConfig.breakFragileWhenSpent() && state.getCollisionShape(level, pos).isEmpty()) {
+            return SpentDisposition.FRAGILE;
+        }
+        return SpentDisposition.HELD;
     }
 
     /**

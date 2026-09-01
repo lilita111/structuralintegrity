@@ -16,6 +16,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.BushBlock;
+import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
@@ -859,6 +860,88 @@ public final class SIGameTests {
                         "[SI-TEST] HOLD-THRESHOLD threshold={} | {} nat={} stands={}"
                                 + " | {} nat={} destroyed={}",
                         threshold, softMat, softNat, softStands, hardMat, hardNat, hardGone);
+            }
+        });
+    }
+
+    /**
+     * A tagged material breaks even where the threshold would have held it.
+     *
+     * holdThresholdDiscriminatesByMaterial proves the NUMBER discriminates, by
+     * putting one block on each side of it. That says nothing about the veto,
+     * because the two materials it uses already disagree on natural integrity -
+     * the threshold alone explains its result.
+     *
+     * So this puts both materials on the SAME side. Dirt and oak leaves are both
+     * natural 1 and both never_anchor, and run/config sets holdSpentUpToNatural to
+     * 32, so on the number alone both would be held and the test would fail. Only
+     * #structuralintegrity:breaks_when_spent can separate them, which is the whole
+     * claim. The tag membership is asserted directly as well, so a tag json that
+     * silently failed to load reads as a missing tag rather than as a broken veto.
+     *
+     * The leaves are placed PERSISTENT deliberately. A decaying leaf block vanishes
+     * on its own schedule, and a test that cannot tell decay from a break is not
+     * testing anything.
+     *
+     * Opposite corners for the reason spentBlockStandsAndShedsLoad gives:
+     * breakShockwave is on in the test config, and dirt standing next to a break
+     * would be surviving the shockwave rather than proving it was held.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void taggedMaterialBreaksInsideHoldBand(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+        int threshold = SIConfig.holdSpentUpToNatural();
+        Block heldMat = Blocks.DIRT;
+        Block taggedMat = Blocks.OAK_LEAVES;
+        BlockState taggedState = taggedMat.defaultBlockState()
+                .setValue(LeavesBlock.PERSISTENT, true);
+
+        helper.setBlock(new BlockPos(1, FLOOR_Y, 1), heldMat);
+        helper.setBlock(new BlockPos(1, FLOOR_Y + 1, 1), heldMat);
+        helper.setBlock(new BlockPos(5, FLOOR_Y, 5), taggedState);
+        helper.setBlock(new BlockPos(5, FLOOR_Y + 1, 5), taggedState);
+
+        BlockPos held = helper.absolutePos(new BlockPos(1, FLOOR_Y + 1, 1));
+        BlockPos tagged = helper.absolutePos(new BlockPos(5, FLOOR_Y + 1, 5));
+        helper.assertTrue(Integrity.place(level, reg, held) != null, "dirt was not structural");
+        helper.assertTrue(Integrity.place(level, reg, tagged) != null, "leaves were not structural");
+
+        int heldNat = Integrity.naturalOf(level, held, level.getBlockState(held));
+        int taggedNat = Integrity.naturalOf(level, tagged, level.getBlockState(tagged));
+        helper.assertTrue(heldNat <= threshold && taggedNat <= threshold,
+                "this test needs BOTH materials inside holdSpentUpToNatural=" + threshold
+                        + " so that only the tag can separate them, but " + heldMat
+                        + " is natural " + heldNat + " and " + taggedMat + " is natural "
+                        + taggedNat + " - adjust the config in run/config");
+        helper.assertTrue(level.getBlockState(tagged).is(SITags.BREAKS_WHEN_SPENT),
+                taggedMat + " is not in #structuralintegrity:breaks_when_spent - the tag"
+                        + " json did not load, so this would be testing nothing");
+        helper.assertTrue(!level.getBlockState(held).is(SITags.BREAKS_WHEN_SPENT),
+                heldMat + " must NOT be in #structuralintegrity:breaks_when_spent");
+
+        reg.set(held, SIConfig.failAt());
+        reg.set(tagged, SIConfig.failAt());
+        SIFall.queueDestroy(level, held);
+        SIFall.queueDestroy(level, tagged);
+
+        AtomicBoolean logged = new AtomicBoolean(false);
+        helper.succeedWhen(() -> {
+            boolean heldStands = level.getBlockState(held).getBlock() == heldMat;
+            boolean taggedGone = level.getBlockState(tagged).isAir();
+            helper.assertTrue(heldStands,
+                    heldMat + " is natural " + heldNat + ", inside holdSpentUpToNatural="
+                            + threshold + " and untagged, so it must be held - it was destroyed");
+            helper.assertTrue(taggedGone,
+                    taggedMat + " is natural " + taggedNat + ", inside holdSpentUpToNatural="
+                            + threshold + ", so only the breaks_when_spent tag can destroy it"
+                            + " - it is still standing, so the veto did not fire");
+            if (logged.compareAndSet(false, true)) {
+                StructuralIntegrity.LOGGER.info(
+                        "[SI-TEST] BREAKS-WHEN-SPENT threshold={} | {} nat={} untagged stands={}"
+                                + " | {} nat={} tagged destroyed={}",
+                        threshold, heldMat, heldNat, heldStands,
+                        taggedMat, taggedNat, taggedGone);
             }
         });
     }

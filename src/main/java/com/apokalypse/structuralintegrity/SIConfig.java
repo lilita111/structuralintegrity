@@ -130,12 +130,36 @@ public final class SIConfig {
                     "Two values are the old switch. 0 holds nothing at all, since anything",
                     "structural is at least natural 1, and is the old true. 1024 holds",
                     "everything including unbreakable blocks, and is the old false.",
-                    "One caveat at low settings: defaultFragileIntegrity gives every",
-                    "collision-less block with no data map row - torches, rails, levers - a",
-                    "natural of 1, so they are held by any setting of 1 or more. Raise that",
-                    "key instead if you want them to break, but note it also changes how much",
-                    "load they carry.")
+                    "Two vetoes sit above this number since 0.7.2 and both win when they",
+                    "fire, because this key answers how much load a material carries and",
+                    "that is not the same question as whether it slumps or shatters. Soil",
+                    "answers both the same way, which is what made one number look like",
+                    "enough. Leaves do not: natural 1, below any useful threshold, so a",
+                    "canopy left by a felled trunk hung in the air instead of dropping.",
+                    "First veto: a block in #structuralintegrity:breaks_when_spent always",
+                    "breaks - leaves, glass, carpets, cake, ladders. Datapack-overridable.",
+                    "Second veto: breakFragileWhenSpent, below, for anything with no",
+                    "collision shape - which defaultFragileIntegrity puts at natural 1 and",
+                    "so inside any band of 1 or more.",
+                    "So 1024 no longer holds literally everything: it holds everything not",
+                    "vetoed. Clear the tag and turn that key off to get the old behaviour.")
             .defineInRange("holdSpentUpToNatural", Integrity.HOLD_SPENT_UP_TO_NATURAL, 0, 1024);
+
+    private static final ModConfigSpec.BooleanValue BREAK_FRAGILE_WHEN_SPENT = B
+            .comment("true: a spent block with no collision shape breaks whatever",
+                    "holdSpentUpToNatural says. These are torches, rails, levers, buttons,",
+                    "flowers, redstone dust - anything you walk through. None of them carry",
+                    "a data map row, so naturalOf falls back to defaultFragileIntegrity,",
+                    "which is 1 and therefore inside any hold band of 1 or more. Held, they",
+                    "hang in the air where the wall they were on used to be.",
+                    "This is the same veto #structuralintegrity:breaks_when_spent applies,",
+                    "written as a rule instead of a list so it also covers modded decoration",
+                    "nobody has tagged.",
+                    "false: they obey holdSpentUpToNatural like everything else. Raising",
+                    "defaultFragileIntegrity is the other way to do it, but that also changes",
+                    "how much load they carry, which is the conflation this key exists to",
+                    "avoid.")
+            .define("breakFragileWhenSpent", true);
 
     private static final ModConfigSpec.BooleanValue REVERSE_INTEGRITY_ON_BREAK = B
             .comment("true: destroying a block runs the chain in reverse - the same walk from",
@@ -474,6 +498,10 @@ public final class SIConfig {
     public static int holdSpentUpToNatural() {
         return SPEC.isLoaded() ? HOLD_SPENT_UP_TO_NATURAL.get()
                 : Integrity.HOLD_SPENT_UP_TO_NATURAL;
+    }
+
+    public static boolean breakFragileWhenSpent() {
+        return !SPEC.isLoaded() || BREAK_FRAGILE_WHEN_SPENT.get();
     }
 
     public static int failAt() {

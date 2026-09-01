@@ -267,7 +267,8 @@ public final class SIFall {
             // threshold on the material, and this worklist mixes them freely - a
             // collapse that spends a dirt block and the stone lintel above it holds
             // the first and destroys the second in the same loop.
-            if (Integrity.holdsWhenSpent(level, pos)) {
+            Integrity.SpentDisposition disp = Integrity.dispositionWhenSpent(level, pos);
+            if (disp == Integrity.SpentDisposition.HELD) {
                 // The block stays in the world, pinned spent. It stops conducting
                 // support (collect() treats spent rows as gaps), so whatever it was
                 // holding detaches around it. No break happened, so no splintering.
@@ -280,6 +281,16 @@ public final class SIFall {
                     }
                 }
                 continue;
+            }
+            // Says so out loud when a veto is what destroyed this block, because the
+            // number in the config said hold and the block broke anyway. Silence here
+            // through 0.6.6-0.7.1 is what let floating leaves read as correct.
+            if (disp != Integrity.SpentDisposition.ABOVE_THRESHOLD) {
+                StructuralIntegrity.LOGGER.info(
+                        "[SI] SPENT {} {} nat={} inside hold band (<={}) but breaks: {}",
+                        fmt(pos), level.getBlockState(pos).getBlock(),
+                        Integrity.naturalOf(level, pos, level.getBlockState(pos)),
+                        SIConfig.holdSpentUpToNatural(), disp);
             }
             var broken = level.getBlockState(pos).getBlock();
             boolean ok = level.destroyBlock(pos, true);
