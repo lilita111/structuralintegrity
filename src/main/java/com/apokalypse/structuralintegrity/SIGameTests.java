@@ -8,6 +8,7 @@ import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.Level;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -17,6 +18,8 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.BushBlock;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
+import net.minecraft.world.phys.Vec3;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -27,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Gamma verification for {@link SIFall} stage 2/3: does a detached component
@@ -211,6 +215,248 @@ public final class SIGameTests {
         }
         StructuralIntegrity.LOGGER.info("[SI] SWEEP {} vanilla blocks -> {} (structural tier -> count: {})",
                 vanilla, out, tiers);
+        helper.succeed();
+    }
+
+    // ---- 0.6.0: force on sub-levels ----
+
+    /**
+     * Hard enough that nothing else can account for it. A collapse topple is
+     * collapseForce (1.5 m/s by default) and gravity only moves Y, so a body that
+     * ends up travelling faster than a quarter of this along +X was pushed by
+     * {@link SIForce#apply} and by nothing else in the mod.
+     */
+    private static final double TEST_PUSH = 40.0;
+
+    /**
+     * Does {@link SIForce#apply} actually reach sable's physics pipeline? A cluster
+     * is dropped exactly as {@link #revertOnLanding} drops one, and the first tick
+     * on which it exists as a sub-level it is shoved along +X. If the impulse lands,
+     * the body's own reported linear velocity gains an X component it had no other
+     * way to get.
+     *
+     * The sub-level is captured by reference the moment it is first seen, and
+     * located by {@link SIForce#worldPositionOf} rather than
+     * {@link SIFall#worldAnchorOf} - the pose's translation is the world position of
+     * the centre of mass by definition, so it needs none of the frame assumptions
+     * that make worldAnchorOf unreliable.
+     */
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void forcePushesSubLevel(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        List<BlockPos> clusterWorld = new ArrayList<>();
+        for (BlockPos local : CLUSTER_LOCAL) {
+            helper.setBlock(local, Blocks.STONE);
+            BlockPos world = helper.absolutePos(local);
+            clusterWorld.add(world);
+            reg.set(world, Integrity.naturalOf(level, world, level.getBlockState(world)));
+        }
+        StructuralIntegrity.LOGGER.info("[SI-TEST] forcePushesSubLevel: cluster n={} at {}",
+                clusterWorld.size(), clusterWorld);
+        SIFall.queueFall(level, clusterWorld.get(0));
+
+        BlockPos queuedAt = clusterWorld.get(0);
+        AtomicReference<ServerSubLevel> own = new AtomicReference<>();
+        AtomicBoolean pushed = new AtomicBoolean(false);
+        AtomicBoolean moved = new AtomicBoolean(false);
+        // Ticks since the sub-level was first seen. The whole question is whether a
+        // body ignores an impulse only while it is brand new.
+        int[] age = {-1};
+
+        helper.onEachTick(() -> {
+            ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
+            if (container == null) {
+                return;
+            }
+            if (own.get() == null) {
+                // Matched on the anchor this test itself queued, never on a spatial
+                // margin. Gametests are tiled a few blocks apart in one shared level,
+                // so any generous margin reaches into the neighbours - a 24-block one
+                // picked up sable's own assembly test, twenty blocks away, and a
+                // 1370 N s impulse landed on its structure instead of this one's.
+                for (ServerSubLevel sub : container.getAllSubLevels()) {
+                    if (queuedAt.equals(SIFall.assembledAt(sub))) {
+                        own.set(sub);
+                        var pose = sub.logicalPose().position();
+                        var bb = sub.boundingBox();
+                        StructuralIntegrity.LOGGER.info(
+                                "[SI-TEST] own sub-level assembledAt={} poseCoM=({},{},{}) "
+                                        + "worldBounds=[{},{},{} .. {},{},{}]",
+                                queuedAt, pose.x(), pose.y(), pose.z(),
+                                bb.minX(), bb.minY(), bb.minZ(), bb.maxX(), bb.maxY(), bb.maxZ());
+                        break;
+                    }
+                }
+            }
+            ServerSubLevel sub = own.get();
+            if (sub == null) {
+                return;
+            }
+            age[0]++;
+            if (!pushed.get()) {
+                if (SIForce.apply(sub, new Vec3(1.0, 0.0, 0.0), TEST_PUSH)) {
+                    pushed.set(true);
+                }
+                return;
+            }
+            // Asked of the physics engine, not read off latestLinearVelocity. That
+            // field is recomputed from the pose delta and reads a flat zero for these
+            // bodies for their whole life, which is what made an earlier version of
+            // this test report a working push as a failure.
+            double vx = SIForce.linearVelocityOf(sub).x;
+            StructuralIntegrity.LOGGER.info("[SI-TEST] age={} vx={} (mirror says {})",
+                    age[0], vx, sub.latestLinearVelocity.x());
+            if (vx > TEST_PUSH * 0.25) {
+                moved.set(true);
+            }
+        });
+
+        helper.runAtTickTime(30, () -> helper.assertTrue(pushed.get(),
+                "no sub-level to push - fall/assemble did not fire, or the rigid body handle was null"));
+
+        helper.succeedWhen(() -> helper.assertTrue(moved.get(),
+                "impulse did not change the body's velocity: pushed=" + pushed.get()));
+    }
+
+
+    /**
+     * The other half of the force spec: a real detonation, through the real
+     * {@code ExplosionEvent.Detonate} handler, moving a real sub-level.
+     * {@link #forcePushesSubLevel} proves the impulse reaches sable; this proves the
+     * explosion is wired to it and that the range and falloff arithmetic lands on
+     * the right body.
+     *
+     * The charge is deliberately tiny - radius 1, so explosionForceRadius reaches
+     * three blocks - and set to break nothing. Gametests share one level a few
+     * blocks apart, and the shipped behaviour pushes every sub-level in reach
+     * whoever owns it, so a default-sized blast here would reach into the
+     * neighbouring tests and shove their structures around.
+     */
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void explosionPushesSubLevel(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        List<BlockPos> clusterWorld = new ArrayList<>();
+        for (BlockPos local : CLUSTER_LOCAL) {
+            helper.setBlock(local, Blocks.STONE);
+            BlockPos world = helper.absolutePos(local);
+            clusterWorld.add(world);
+            reg.set(world, Integrity.naturalOf(level, world, level.getBlockState(world)));
+        }
+        BlockPos queuedAt = clusterWorld.get(0);
+        SIFall.queueFall(level, queuedAt);
+
+        AtomicReference<ServerSubLevel> own = new AtomicReference<>();
+        AtomicBoolean detonated = new AtomicBoolean(false);
+        AtomicBoolean moved = new AtomicBoolean(false);
+        double[] baselineVx = {0.0};
+
+        helper.onEachTick(() -> {
+            ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
+            if (container == null) {
+                return;
+            }
+            if (own.get() == null) {
+                for (ServerSubLevel sub : container.getAllSubLevels()) {
+                    if (queuedAt.equals(SIFall.assembledAt(sub))) {
+                        own.set(sub);
+                        break;
+                    }
+                }
+            }
+            ServerSubLevel sub = own.get();
+            if (sub == null) {
+                return;
+            }
+            if (!detonated.get()) {
+                Vec3 at = SIForce.worldPositionOf(sub);
+                baselineVx[0] = SIForce.linearVelocityOf(sub).x;
+                // Two blocks to the -X side, so anything the blast does shows up as +X.
+                level.explode(null, at.x - 2.0, at.y, at.z, 1.0f, Level.ExplosionInteraction.NONE);
+                detonated.set(true);
+                StructuralIntegrity.LOGGER.info(
+                        "[SI-TEST] explosionPushesSubLevel: charge at {} baselineVx={}",
+                        at.x - 2.0, baselineVx[0]);
+                return;
+            }
+            double delta = SIForce.linearVelocityOf(sub).x - baselineVx[0];
+            StructuralIntegrity.LOGGER.info("[SI-TEST] tick={} post-blast vx delta={}",
+                    helper.getTick(), delta);
+            // explosionForce 8 m/s, falling off to two thirds one block outside the
+            // hull. Nothing else in the mod can add to +X after assembly.
+            if (delta > 2.0) {
+                moved.set(true);
+            }
+        });
+
+        helper.runAtTickTime(30, () -> helper.assertTrue(detonated.get(),
+                "no sub-level existed to detonate next to - fall/assemble did not fire"));
+
+        helper.succeedWhen(() -> helper.assertTrue(moved.get(),
+                "the blast did not move the sub-level: detonated=" + detonated.get()));
+    }
+
+    // ---- 0.6.0: ground that stopped being ground ----
+
+    // A 3x3x3 of stone with local corner (1,4,1): the 26-block shell all carry
+    // wbireg rows, the block at the centre carries none and so reads as ground.
+    private static final BlockPos ENCLOSE_MIN = new BlockPos(1, 4, 1);
+    private static final BlockPos ENCLOSE_CORE = new BlockPos(2, 5, 2);
+    private static final BlockPos ENCLOSE_LID = new BlockPos(2, 6, 2);
+
+    /**
+     * The enclosure walk, both answers, without waiting on a one-in-a-hundred roll -
+     * which is why {@link SIEnclosure#check} is public separately from
+     * {@link SIEnclosure#maybeCheck}.
+     *
+     * With a hole in the shell the core is open to the world and must stay ground;
+     * with the hole plugged nothing untouched connects it to anything and it must
+     * stop being ground. The same core, in the same place, in the same test, so the
+     * only difference between the two answers is the one block.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void enclosedGroundIsDemoted(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        BlockPos core = helper.absolutePos(ENCLOSE_CORE);
+        BlockPos lid = helper.absolutePos(ENCLOSE_LID);
+
+        for (int dx = 0; dx < 3; dx++) {
+            for (int dy = 0; dy < 3; dy++) {
+                for (int dz = 0; dz < 3; dz++) {
+                    BlockPos local = ENCLOSE_MIN.offset(dx, dy, dz);
+                    helper.setBlock(local, Blocks.STONE);
+                    BlockPos world = helper.absolutePos(local);
+                    if (local.equals(ENCLOSE_CORE)) {
+                        // Untouched: no row at all, which is what reads as ground.
+                        reg.clear(world);
+                    } else {
+                        reg.set(world, Integrity.naturalOf(level, world, level.getBlockState(world)));
+                    }
+                }
+            }
+        }
+        helper.assertTrue(reg.isAnchor(core), "test setup: the core should start out untracked");
+
+        // Open the lid. The core now touches air, so it is not enclosed by anything.
+        helper.setBlock(ENCLOSE_LID, Blocks.AIR);
+        reg.clear(lid);
+        int open = SIEnclosure.check(level, reg, lid);
+        helper.assertTrue(open == 0, "open shell: expected no demotion, got " + open);
+        helper.assertTrue(reg.isAnchor(core), "open shell: the core stopped being ground anyway");
+
+        // Plug it. Every face of the core is now a block with a wbireg row.
+        helper.setBlock(ENCLOSE_LID, Blocks.STONE);
+        reg.set(lid, Integrity.naturalOf(level, lid, level.getBlockState(lid)));
+        int closed = SIEnclosure.check(level, reg, lid);
+        helper.assertTrue(closed == 1, "sealed shell: expected exactly the core demoted, got " + closed);
+        helper.assertTrue(!reg.isAnchor(core), "sealed shell: the core is still ground");
+
+        StructuralIntegrity.LOGGER.info("[SI-TEST] enclosedGroundIsDemoted: open={} closed={}", open, closed);
         helper.succeed();
     }
 

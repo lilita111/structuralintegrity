@@ -2,11 +2,15 @@ package com.apokalypse.structuralintegrity;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.ExplosionEvent;
@@ -96,6 +100,10 @@ public final class SIEvents {
                     restored.count(), restored.trace(), restored.capped() ? " (capped)" : "");
         }
 
+        // Broken directly, by a player. One roll in enclosureCheckChance asks whether
+        // the untouched rock this break exposed is still connected to anything.
+        SIEnclosure.maybeCheck(level, reg, pos);
+
         // Stage 2. Deliberately not solved here: this fires while the broken block
         // is still in the world, so the component that matters does not exist yet.
         SIFall.seedAround(level, pos, false);
@@ -115,6 +123,11 @@ public final class SIEvents {
         if (!(event.getLevel() instanceof ServerLevel level)) {
             return;
         }
+        // Before the early return below: a charge going off in mid-air beside a ship
+        // removes no blocks at all, and it should still shove the ship. The force
+        // follows the explosion, not the damage.
+        pushSubLevels(level, event.getExplosion().center(), event.getExplosion().radius());
+
         List<BlockPos> affected = event.getAffectedBlocks();
         if (affected.isEmpty()) {
             return;
@@ -148,6 +161,54 @@ public final class SIEvents {
         }
         StructuralIntegrity.LOGGER.info("[SI] EXPLOSION {} blocks -> shockwave +{} across {} chain blocks, disturbed and seeded for fall-check",
                 affected.size(), shock, restored);
+    }
+
+    /**
+     * The blast pushes what is already loose, not just what it removes. Every
+     * sub-level whose body sits inside the reach is shoved directly away from the
+     * centre, hardest at the centre and fading to nothing at the edge.
+     *
+     * This is the larger of the mod's two forces; the smaller one is the topple a
+     * piece gets the moment integrity loss detaches it.
+     */
+    private static void pushSubLevels(ServerLevel level, Vec3 center, float radius) {
+        double force = SIConfig.explosionForce();
+        double reach = radius * SIConfig.explosionForceRadius();
+        if (force <= 0.0 || reach <= 0.0) {
+            return;
+        }
+        ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
+        if (container == null) {
+            return;
+        }
+        int pushed = 0;
+        for (ServerSubLevel subLevel : new ArrayList<>(container.getAllSubLevels())) {
+            // Range to the body itself, not to its centre of mass. SubLevel#boundingBox
+            // is the plot-space bounds run through the pose - a real world-space AABB -
+            // and using it is the difference between a charge going off against the
+            // hull of a long ship and a charge going off "sixty blocks from its middle".
+            double dist = SIForce.distanceToBody(subLevel, center);
+            if (dist > reach) {
+                continue;
+            }
+            // Direction still comes from the centre of mass: that is the point the
+            // impulse acts on, so pushing along anything else would be a lie about
+            // which way the body travels.
+            Vec3 at = SIForce.worldPositionOf(subLevel);
+            Vec3 offset = at.subtract(center);
+            // Dead centre gives no direction to push along; lift it straight up
+            // rather than skipping it, which is what a charge under a slab does.
+            Vec3 dir = offset.lengthSqr() < 1.0e-6 ? new Vec3(0.0, 1.0, 0.0) : offset;
+            double falloff = 1.0 - dist / reach;
+            if (SIForce.apply(subLevel, dir, force * falloff)) {
+                pushed++;
+            }
+        }
+        if (pushed > 0) {
+            StructuralIntegrity.LOGGER.info("[SI] EXPLOSION pushed {} sub-level(s) within {} blocks of {},{},{}",
+                    pushed, String.format(java.util.Locale.ROOT, "%.1f", reach),
+                    center.x, center.y, center.z);
+        }
     }
 
     /**

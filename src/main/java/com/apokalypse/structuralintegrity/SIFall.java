@@ -18,6 +18,7 @@ import net.neoforged.neoforge.event.tick.LevelTickEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import org.joml.Quaterniondc;
 import org.joml.Vector3d;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -89,6 +90,27 @@ public final class SIFall {
      */
     private static final Set<ServerSubLevel> OWNED_SUB_LEVELS =
             Collections.newSetFromMap(new WeakHashMap<>());
+
+    /**
+     * The world position each owned sub-level was assembled at. Recorded because it
+     * is the one world-space fact about a sub-level this mod knows for certain - it
+     * came from block positions, not from a pose - and a test that has to pick its
+     * own sub-level out of a level shared with every other test in the run has
+     * nothing else to match on. It goes stale the moment the body moves, so it
+     * identifies a sub-level rather than locating one.
+     */
+    private static final Map<ServerSubLevel, BlockPos> ASSEMBLED_AT = new WeakHashMap<>();
+
+    /** True if this mod assembled this sub-level, as opposed to some other mod. */
+    public static boolean isOwned(ServerSubLevel subLevel) {
+        return OWNED_SUB_LEVELS.contains(subLevel);
+    }
+
+    /** Where this mod assembled this sub-level, or null if it did not assemble it. */
+    @Nullable
+    public static BlockPos assembledAt(ServerSubLevel subLevel) {
+        return ASSEMBLED_AT.get(subLevel);
+    }
 
     /**
      * Positions an assembly has already been attempted at, and the tick it happened.
@@ -200,6 +222,8 @@ public final class SIFall {
             reg.clear(pos);
             StructuralIntegrity.LOGGER.info("[SI] CRUSH destroy {} {} wbireg={}",
                     fmt(pos), ok ? "removed" : "FAILED", reg.size());
+            // Broken indirectly, by integrity. Same roll as a player's own break.
+            SIEnclosure.maybeCheck(level, reg, pos);
             for (Direction d : Direction.values()) {
                 BlockPos n = pos.relative(d);
                 if (!Integrity.isStructural(level, n, null)) {
@@ -350,6 +374,14 @@ public final class SIFall {
         }
 
         OWNED_SUB_LEVELS.add(subLevel);
+        ASSEMBLED_AT.put(subLevel, anchor.immutable());
+
+        // The piece has just lost whatever was under it. Push it away from the
+        // failure so it topples instead of sinking straight down in place.
+        double collapse = SIConfig.collapseForce();
+        if (collapse > 0.0) {
+            SIForce.apply(subLevel, SIForce.toppleDirection(anchor, blocks), collapse);
+        }
 
         StructuralIntegrity.LOGGER.info("[SI] SUBLEVEL created at {} n={} bounds=[{},{},{} .. {},{},{}]",
                 fmt(anchor), blocks.size(),

@@ -558,6 +558,22 @@ public final class Integrity {
         return out;
     }
 
+    /**
+     * Disturb one position rather than a mined block's neighbours: the same entry
+     * write, at the same natural value, for a block that has been shown by some
+     * other means to no longer be ground. {@link SIEnclosure} uses it for a lump of
+     * rock that nothing untouched connects to any more.
+     *
+     * @return false if the position was already tracked or is not structural
+     */
+    public static boolean disturbAt(ServerLevel level, WbiReg reg, BlockPos pos) {
+        if (!isStructural(level, pos, null) || !isAnchor(level, reg, pos)) {
+            return false;
+        }
+        reg.setEntry(pos, initialValue(level, pos, naturalOf(level, pos, level.getBlockState(pos)), true));
+        return true;
+    }
+
     // =====================================================================
     // Evaluation - read-only
     // =====================================================================

@@ -29,8 +29,18 @@ public final class SIConfig {
 
     private static final ModConfigSpec.ConfigValue<List<? extends String>> NON_STRUCTURAL_BLOCKS = B
             .comment("Blocks the integrity system ignores completely, as if they were air.",
-                    "Air, fluids and plants are always ignored; this list adds to that.")
-            .defineListAllowEmpty("nonStructuralBlocks", List.of(), () -> "", SIConfig::isBlockId);
+                    "Air, fluids and plants are always ignored; this list adds to that.",
+                    "Entries are block ids or #tags.")
+            .defineListAllowEmpty("nonStructuralBlocks", List.of(),
+                    () -> "", SIConfig::isBlockIdOrTag);
+
+    private static final ModConfigSpec.BooleanValue SAME_TYPE_LEAVES_CONNECT = B
+            .comment("Leaves never connect to a DIFFERENT leaf block - a tree cannot stay",
+                    "anchored by hanging its canopy in a neighbouring species. true: leaves of",
+                    "the same block still connect to each other, so one tree's canopy is a",
+                    "single body on its trunk. false: no leaf connects to any leaf - every",
+                    "leaf stands only on real blocks.")
+            .define("sameTypeLeavesConnect", true);
 
     private static final ModConfigSpec.ConfigValue<List<? extends String>> INTEGRITY_PATTERNS = B
             .comment("Wildcard integrity overrides, entries \"<id-pattern>=<integrity>\" where *",
@@ -102,6 +112,58 @@ public final class SIConfig {
                     "TNT hits harder. Still capped at each block's own natural integrity.",
                     "0 disables it.")
             .defineInRange("explosionShockwaveDelta", 8, 0, 64);
+
+    // ---- force on sub-levels ----------------------------------------------
+
+    private static final ModConfigSpec.BooleanValue FORCE_SCALES_WITH_MASS = B
+            .comment("true: the magnitudes below are read as a velocity change in m/s and are",
+                    "multiplied by the body's mass before being applied, so one number means",
+                    "the same shove for a four-block chunk and a four-hundred-block wall.",
+                    "false: they are raw impulses in N s, and a heavy body will barely notice",
+                    "a number that launches a light one.")
+            .define("forceScalesWithMass", true);
+
+    private static final ModConfigSpec.DoubleValue EXPLOSION_FORCE = B
+            .comment("How hard an explosion pushes a sub-level that is standing in it, at the",
+                    "blast centre. Falls off linearly to nothing at explosionForceRadius.",
+                    "0 disables it.")
+            .defineInRange("explosionForce", 8.0, 0.0, 1024.0);
+
+    private static final ModConfigSpec.DoubleValue EXPLOSION_FORCE_RADIUS = B
+            .comment("How far from the blast centre explosionForce still reaches, as a multiple",
+                    "of the explosion's own radius. TNT is radius 4, so the default reaches",
+                    "12 blocks.")
+            .defineInRange("explosionForceRadius", 3.0, 0.0, 32.0);
+
+    private static final ModConfigSpec.DoubleValue COLLAPSE_FORCE = B
+            .comment("How hard a piece is pushed the moment integrity loss detaches it, away",
+                    "from the block whose support gave way and flattened to horizontal - gravity",
+                    "already supplies the downward part. Smaller than explosionForce: this is a",
+                    "topple, not a launch. 0 disables it.")
+            .defineInRange("collapseForce", 1.5, 0.0, 1024.0);
+
+    // ---- ground that stopped being ground ----------------------------------
+
+    private static final ModConfigSpec.IntValue ENCLOSURE_CHECK_CHANCE = B
+            .comment("One in this many broken blocks - mined by a player or crushed by integrity",
+                    "- triggers the enclosure walk: are the untouched blocks around the break",
+                    "walled in entirely by tracked blocks, and therefore not ground any more?",
+                    "1 runs it on every break, 0 disables it. Raising it makes mined-out terrain",
+                    "take longer to notice it is floating; lowering it costs a walk per break.")
+            .defineInRange("enclosureCheckChance", 100, 0, 100000);
+
+    private static final ModConfigSpec.IntValue ENCLOSURE_MAX_REGION = B
+            .comment("How many untouched blocks the enclosure walk may cover before deciding the",
+                    "region is open terrain and leaving it as ground. Open terrain is what hits",
+                    "this; an enclosed lump closes long before it.")
+            .defineInRange("enclosureMaxRegion", 4096, 8, 65536);
+
+    private static final ModConfigSpec.ConfigValue<List<? extends String>> ENCLOSURE_GROUND_BLOCKS = B
+            .comment("Blocks that are ground no matter what has been built around them. The",
+                    "enclosure walk stops and leaves the region alone the moment it reaches one,",
+                    "so deep rock cannot be made to fall by walling it in.")
+            .defineListAllowEmpty("enclosureGroundBlocks", List.of("minecraft:deepslate"),
+                    () -> "", SIConfig::isBlockId);
 
     private static final ModConfigSpec.BooleanValue MATERIAL_BOUNDARY_STOPS = B
             .comment("true: material crossings shape the chain. Into a sturdier material the",
@@ -184,6 +246,17 @@ public final class SIConfig {
 
     private static boolean isBlockId(Object o) {
         return o instanceof String s && ResourceLocation.tryParse(s) != null;
+    }
+
+    /**
+     * A block id, or a #tag naming a set of them. Validation only - resolving a tag
+     * to actual blocks is a separate job from deciding the entry is well-formed.
+     */
+    private static boolean isBlockIdOrTag(Object o) {
+        if (!(o instanceof String s) || s.isEmpty()) {
+            return false;
+        }
+        return ResourceLocation.tryParse(s.startsWith("#") ? s.substring(1) : s) != null;
     }
 
     private static Set<Block> resolve(List<? extends String> ids) {
@@ -310,5 +383,34 @@ public final class SIConfig {
 
     public static boolean subLevelsFloatWhenReconverted() {
         return !SPEC.isLoaded() || SUBLEVELS_FLOAT_WHEN_RECONVERTED.get();
+    }
+
+    public static boolean forceScalesWithMass() {
+        return !SPEC.isLoaded() || FORCE_SCALES_WITH_MASS.get();
+    }
+
+    public static double explosionForce() {
+        return SPEC.isLoaded() ? EXPLOSION_FORCE.get() : 8.0;
+    }
+
+    public static double explosionForceRadius() {
+        return SPEC.isLoaded() ? EXPLOSION_FORCE_RADIUS.get() : 3.0;
+    }
+
+    public static double collapseForce() {
+        return SPEC.isLoaded() ? COLLAPSE_FORCE.get() : 1.5;
+    }
+
+    public static int enclosureCheckChance() {
+        return SPEC.isLoaded() ? ENCLOSURE_CHECK_CHANCE.get() : 100;
+    }
+
+    public static int enclosureMaxRegion() {
+        return SPEC.isLoaded() ? ENCLOSURE_MAX_REGION.get() : 4096;
+    }
+
+    public static Set<Block> enclosureGroundBlocks() {
+        return SPEC.isLoaded() ? resolve(ENCLOSURE_GROUND_BLOCKS.get())
+                : Set.of(net.minecraft.world.level.block.Blocks.DEEPSLATE);
     }
 }
