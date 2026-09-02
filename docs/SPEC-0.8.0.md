@@ -218,10 +218,12 @@ guessed at.
    gives way. With FROM never affected by the verdict, the shield may be redundant —
    or may still be doing real work via splinter wear specifically.
 5. ~~**Does the `failAt + 1` floor survive the side-joint change of §9?**~~
-   Answered in 0.7.9 and no longer open: it became `sideJointNeverArrivesSpent`,
-   defaulting to true. Left in the list because the *default* is still a design
-   call 0.8.0 may want to revisit once disconnect-by-default changes what a
-   one-point block means.
+   Closed twice. 0.7.9 turned it into `sideJointNeverArrivesSpent`, and 0.7.10
+   removed the fraction that made it a question at all: with nothing rounding
+   away, a host holding one point hands over one point and no key decides it.
+   Both the key and `sideInheritanceCap` stay declared for downgrade safety and
+   neither is read. Left visible because a rewrite that reinstates any side
+   fraction inherits this question along with it.
 
 ## 8. Relationship to the two smaller specs
 
@@ -239,66 +241,115 @@ the `down != null` return in `supportOf`, delegating to the existing
 the strength vote, which would let load travel upward through a mass — is unrelated
 to anything in this document.
 
-## 9. Side inheritance is already spent - 0.7.9 got there first
+## 9. Side inheritance, and why 0.7.10 took it out
 
-This section was drafted as a 0.8.0 proposal and implemented the same day, so it is
-kept as a record of what the rule now is rather than as work outstanding. The
-0.8.0 rewrite inherits it.
+This section has been a proposal, then a record, and is now a record of a removal.
+It is kept whole rather than deleted because the four rules it went through are the
+same idea attempted four times, and the reason the last attempt is *no* rule at all
+is only legible against the three that came before it. The 0.8.0 rewrite inherits
+the ending, not the sequence.
 
-0.7.8 had already moved the side cap onto the host block: placing against a
-vertical face gives the guest a fraction - `sideInheritanceFactor`, half by default
-- of what it was stuck TO rather than of its own rating, so a shelf bolted to
-deepslate beats the same shelf bolted to planks. What it read on that host was the
-host's *natural rating*, which let a wall one point from failing hand out half of a
-full stone rating.
+### What the four rules were
 
-0.7.9 re-points the same rule at the host's *stored* value:
+Placing a block against a vertical face - hanging a shelf off a wall rather than
+setting it on the floor - has always been treated as the weaker joint, and every
+version up to 0.7.9 expressed that by giving the newcomer a fraction of something.
+`sideInheritanceFactor`, half by default:
 
 ```
-0.7.8:  min( guest natural, floor(host natural * factor), host stored )
-0.7.9:  min( guest natural, floor(host stored  * factor) )
+pre-0.7.8:  min( floor(guest natural * factor), host stored )
+0.7.8:      min( guest natural, floor(host natural * factor), host stored )
+0.7.9:      min( guest natural, floor(host stored  * factor) )
+0.7.10:     min( guest natural, host stored )
 ```
 
-The host's remaining strength stops being a ceiling applied after the fraction and
-becomes the thing the fraction is taken of, so `faceCap` returns the complete
-ceiling and neither caller clamps what it hands back. The two forms agree exactly
-on a fresh host and diverge as it wears - a stone wall worn 32 to 10 gives a guest
-16 under the old form and 5 under this one.
+Each step fixed a real defect in the one before it. Halving the *guest* meant the
+wall it hung on made no difference, so a shelf bolted to deepslate scored the same
+as one bolted to planks - 0.7.8 moved the fraction onto the host. Reading the host's
+*rating* meant a wall one point from failing still handed out half of a full stone
+rating, a number derived from the material where it should have come from the state,
+which is the same shape as both 0.7.7 defects - 0.7.9 re-pointed it at the stored
+value. 0.7.10 keeps that correction and drops the fraction itself.
 
-**Ledges now decay outward, and that is the point.** Natural integrity is constant
-per material, so the 0.7.8 form capped every block along a uniform run at the same
-half of the same rating - an iron run off an iron wall read 40, 40, 40 indefinitely.
-Stored value is not constant, so the run halves at every step: 40, 20, 10. A
-cantilever thins to nothing on its own, with no distance rule, no length limit and
-no config key - the general mechanism the old form needed a special case to fake.
+### Why there is no fraction
 
-**Build order starts to matter.** The same shelf on the same wall is worth less hung
-after the wall has taken load than hung first. That follows directly from measuring
-state rather than material, and belongs in the changelog because a player will read
-it as a bug.
+The sideways joint is not free and never was. `chain()` bills a horizontal link at
+`sidewaysLoadMultiplier` - double, by default - charged to the sturdier of the two
+materials, and that charge runs on the very placement the fraction was also
+punishing. Halving the newcomer on arrival was a **second penalty for one event,
+taken out of a different account**: the chain debits the structure, the fraction
+debited the newcomer, and nothing reconciled them. The missing half was charged to
+nobody and accounted for nowhere.
 
-**The floor question went to config, not to a guess.** `sideInheritanceCap` floored
-its result at `failAt + 1` so a side block never arrived already spent. Against a
-host worn to one point, half rounds away to nothing and only that floor grants
-anything at all - floored, a failing wall still carries a cracked one-point shelf;
-unfloored, attaching to it fails the placement outright. Both are defensible, so it
-is `sideJointNeverArrivesSpent`, defaulting true because that is what 0.7.8 did. A
-host that is *already* spent is not a config question: there is no fraction of
-nothing, the floor is skipped, and the guest gets zero either way.
+What survives is the chain's charge, which is where the cost belongs and where it
+was the whole time. What a face is worth stopped depending on which way it points,
+so `faceCap` is one `min` over two numbers - the guest's own rating and what the
+host still holds - and needs neither the level, nor the neighbour's position, nor
+the direction. Both ceilings remain real and neither is negotiable: a host cannot
+hand over strength it does not have, and no joint however good makes a block sounder
+than the stuff it is made of.
 
-**One thing 0.7.9 deliberately did not do, and 0.8.0 may want to.** Because
-`faceCap` is shared with `recompute`, a repair pass now re-reads a host that may
-have worn since the guest was placed, so `fresh` can come back lower than what the
-guest already holds. It never lands - `recompute` takes `max(before, fresh)` and
-only ever repairs upward - so a worn host repairs its guest *less* than a sound one
-would and never demotes it. The draft of this section claimed the guest would be
-lowered; that was wrong about the existing code, and `recomputeNeverLowersAGuestAsItsHostWears`
-now pins the actual contract. Lowering an already-placed block as its host degrades
-is a real and arguably desirable behaviour - it is what "structures come apart as
-they wear" means taken to its end - but it stops the side joint being settled at
-placement time, which is a change in kind rather than in number. That is 0.8.0's
-call to make, and the test above is what will tell it the old contract was
-deliberate rather than accidental.
+### What this costs, said plainly
+
+**The ledge run goes flat.** 0.7.9's headline consequence was that an iron run off
+an iron wall read 40, 20, 10 - a cantilever that thinned to nothing on its own, with
+no distance rule, no length limit and no config key. That compounding is gone; the
+run now reads at full natural at every step. This is the one place where 0.7.10 is
+a straight loss of behaviour rather than a simplification, and it is accepted
+deliberately: three iron blocks off an iron wall are three ordinary placements, and
+none of them is weaker than iron.
+
+The ledge still ends, for the reason the rest of the mod already uses. Every
+placement runs the load chain back down through the run into the wall and into the
+foundation, and a sideways link there bills double. The wall wears, the foundation
+wears, and a long enough cantilever brings itself down **from the root**, which is
+where a real one fails. A cantilever that failed at its tip while its anchor sat
+untouched was the wrong picture anyway.
+
+**Build order stops mattering for the joint.** 0.7.9 made the same shelf on the same
+wall worth less hung after the wall had taken load than hung first, which was a
+direct consequence of taking a fraction of a moving number. Reading that number
+without cutting it keeps the dependence but removes the multiplication, so a worn
+wall still hands over less than a sound one - it just hands over all of what it has.
+
+**Two config keys stop being read.** `sideInheritanceFactor` and
+`sideJointNeverArrivesSpent` are both dead as of 0.7.10, and both stay **declared**.
+A build that stops declaring a key does not leave it alone in an existing TOML, it
+drops it, and the value silently reverts on the next downgrade - the same reason
+`materialBoundaryStops` and `strongerMaterialBraces` are still declared and unread.
+`sideInheritanceCap` is likewise kept as a private routine with no callers, so
+restoring the old behaviour is re-pointing one call rather than reconstructing an
+argument from a changelog.
+
+The question §7 (5) was raised for goes with them. `sideInheritanceCap` floored
+its result at `failAt + 1` because half of a host holding one point rounds away to
+nothing; with no fraction there is no rounding, one point is handed over as one
+point, and the guest arrives cracked but standing without a key deciding it. A host
+holding *nothing* still grants nothing - `min(guest, 0)` is zero the same way the
+skipped floor was zero.
+
+### What 0.7.10 deliberately does not do
+
+`faceCap` is shared with `recompute`, so a repair pass re-reads a host that may have
+worn since the guest was placed, and `fresh` can come back lower than what the guest
+already holds. It never lands - `recompute` takes `max(before, fresh)` and only ever
+repairs upward - so a worn host repairs its guest *less* than a sound one would and
+never demotes it.
+
+Removing the fraction could not have changed this, because it changes how big
+`fresh` is and not whether a smaller `fresh` is allowed to take effect. The contract
+outlived the rule it was written against, which is the argument for having pinned it
+in its own test. Lowering an already-placed block as its host degrades remains a
+real and arguably desirable behaviour - it is what "structures come apart as they
+wear" means taken to its end - but it stops the joint being settled at placement
+time, which is a change in kind rather than in number. That is 0.8.0's call.
+
+### The omen
+
+Four attempts at one rule, three of them shipped as point releases inside a day, and
+the fourth is a deletion. The rule was never the hard part - the final form is one
+line and every intermediate form was one line. What made each attempt wrong is
+recorded in section 11, which this sequence is the evidence for.
 
 ## 10. Test plan
 
@@ -316,25 +367,118 @@ a manual reproduction.
 - A pillar still behaves exactly as it does in 0.7.7 — this is the regression guard
   that proves the change is confined to the complex case.
 - The dry/real drift probe still agrees, as it does after the 0.7.7 brace rewrite.
-The four §9 tests below already exist and pass as of 0.7.9; they are listed so the
-rewrite knows what it must not break.
+The six §9 tests below already exist and pass as of 0.7.10; they are listed so the
+rewrite knows what it must not break. Four of them were written to pin the fraction
+and now pin its absence, so each one carries the number the old rule would have
+produced in its own failure message — a rewrite that quietly reinstates a side
+fraction fails with the two answers printed side by side rather than with a bare
+mismatch.
 
-- ✅ `sideJointHalvesWhatTheHostHasLeftNotItsRating` — a guest on an iron host worn
-  to 10 inherits 5, not the 10 the 0.7.8 rule gave. The assertion that separates the
-  two forms, and the fixture programs the wear rather than reproducing it.
-- ✅ `aLedgeRunHalvesAtEveryStepOutward` — an iron run off an iron wall reads
-  40, 20, 10 where the old rule held it flat at 40.
-- ✅ `sideJointAgainstANearlySpentHost` — both sides of
-  `sideJointNeverArrivesSpent`, plus the spent host that grants nothing either way.
+- ✅ `sideJointTakesWhatAWornHostHasLeftWhole` — a stone guest on an iron host worn
+  to 10 inherits the whole 10, where 0.7.9 halved it to 5. The fixture programs the
+  wear rather than reproducing it, and asserts the guest arrives holding exactly what
+  the host held.
+- ✅ `sideJointToAWeakHostGivesWhatTheHostHolds` — an iron guest on a stone wall
+  gets the wall's whole 32, not the 16 that 0.7.8 and 0.7.9 both gave. The host still
+  binds; only the second cut is gone.
+- ✅ `sideJointDoesNotPenaliseAWeakGuestOnAStrongHost` — the case no rule ever
+  changed, kept as the guard that the removal did not disturb it.
+- ✅ `aLedgeRunNoLongerThinsOutOnItsOwn` — an iron run off an iron wall now reads
+  flat where 0.7.9 read 40, 20, 10, and asserts the flatness directly. This is the
+  behaviour 0.7.10 gives up, so it is asserted rather than merely no longer tested.
+- ✅ `sideJointAgainstANearlySpentHost` — a host holding one point hands it over
+  whole, and a spent host still grants nothing, both now reached without
+  `sideJointNeverArrivesSpent` participating.
 - ✅ `recomputeNeverLowersAGuestAsItsHostWears` — pins the monotonic-repair contract
-  the paragraph above describes, so 0.8.0 changes it on purpose or not at all.
+  §9 describes, unchanged by the removal, so 0.8.0 changes it on purpose or not at
+  all.
 - Still owed by 0.8.0: a `place` followed by its matching break cancels exactly on a
   worn host, not only on a fresh one.
+
+## 11. Architecture: separate fetching from deciding
+
+Raised, not decided. This section exists because the 0.7.10 sequence was read as an
+omen rather than as a bug — "if that is >1 then in 0.8.0 we take it as a sign of a
+lack of robustness" — and because the target named for 0.8.0 was byte-size and
+speed rather than behaviour.
+
+### The measurement that prompted it
+
+Changing which number the side rule keys off should have been one line. It was six
+lines written and three deleted across five sites in three methods, four of them
+plumbing. The reason is not that the rule is complicated:
+
+> `faceCap` took a level and a position and fetched the host's stored value for
+> itself, while both of its callers were separately already holding that value and
+> clamping with it afterwards. The host was represented **twice, in two forms, at
+> two call-stack levels**, so which representation was authoritative was an emergent
+> property of where in the call stack you were standing rather than a stated fact.
+
+Three defects of that exact shape shipped in three consecutive releases: two in
+0.7.7, one in 0.7.9.
+
+### The proposal
+
+One layer turns a position into a small immutable record — natural, stored,
+structural, anchor — and is the only code that touches `ServerLevel` or `BlockPos`.
+Every rule function above it takes numbers and returns numbers.
+
+Consequences, in the order they matter:
+
+1. **"Which number is keyed off" becomes genuinely one line**, because there is only
+   one representation of a block and it is named in one place.
+2. **Rule functions become testable without a world.** `SIGameTests.class` is
+   **71,775 bytes, 21.2% of all shipped class data**, and it ships to players. Rules
+   that take numbers are unit-testable, which shrinks that file rather than merely
+   relocating it — though relocating it to its own source set is a free 21% cut
+   available today, independent of any rewrite.
+3. **The fetch layer is the natural home for both caches.** `naturalOf` is a pure
+   function of `BlockState` — data map, then pattern lookup, then
+   `getCollisionShape`, then `getDestroySpeed`, then a square root — recomputed at
+   18+ call sites and never memoized. `isStructural` fetches a state and discards it,
+   so every neighbour scan double-fetches.
+4. **Rule functions lose their `level` parameters**, which is bytecode removed rather
+   than moved.
+
+### Byte-size, measured
+
+39 classes, 338,025 bytes of class data.
+
+| Class | Bytes | Share |
+|---|---:|---:|
+| `SIGameTests` | 71,775 | 21.2% |
+| `SIConfig` | 45,609 | 13.5% |
+| `Integrity` | 29,498 | 8.7% |
+
+`SIConfig` is 51 keys and 54 accessors, and its config comment prose *is*
+constant-pool strings — that text has a byte cost where javadoc has none. Javadoc
+costs zero jar bytes, so the 41% source comment ratio is not a target and should not
+be treated as one. The 81 `SIConfig.` reads in production code are a speed item
+rather than a size one; several sit inside loops.
+
+### Open, and owed to oversight before any of it starts
+
+The user's framing was: *"for 0.8.0 we first list the classes and their functions;
+sort by most essential to least essential / see what can be merged into more
+generalised methods by least essential first, checking for redundancies."* That
+inventory has not been produced. This section is the argument for a shape, not
+permission to adopt it, and no rewrite should begin before the inventory exists and
+has been ruled on.
 
 ---
 
 ## Revision log
 
+- **2026-09-02** — §9 rewritten again for 0.7.10-gamma, which removes the side
+  fraction outright on "the logic was fine as it was, and the change to make side
+  blocks lower integrity was an unnecessary punishment to the structure". The
+  section keeps all four historical rules because the argument for having none
+  only reads against them. §7 (5) closed a second time — the question needed a
+  fraction to exist. §10's bullets renamed and re-aimed: four tests written to pin
+  the fraction now pin its absence and print the old answer on failure. The ledge
+  run going flat is recorded as an accepted loss, not as a simplification. §11
+  added, raised not decided, from "0.8.0+ should be improvements in the
+  architecture of the program" and the line-count omen that prompted it.
 - **2026-09-02** — §9 shipped as 0.7.9-gamma, hours after being written as a
   proposal, on "actually build this to 0.7.9 immediately". Rewritten from a proposal
   into a record. The floor question became `sideJointNeverArrivesSpent` rather than

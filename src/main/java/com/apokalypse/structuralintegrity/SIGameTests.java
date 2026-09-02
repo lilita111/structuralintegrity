@@ -606,6 +606,14 @@ public final class SIGameTests {
     // straight out. Every claim the 0.6.3 rules make is a number here - what a
     // pillar costs its base per block, what a ledge costs its innermost block per
     // block, and what each new block is worth when it arrives.
+    //
+    // 0.6.3 made two claims and 0.7.10 keeps one of them. The COST is unchanged and
+    // is the whole reason the second claim could go: a sideways link still bills
+    // sidewaysLoadMultiplier, so the ledge's innermost block pays two points per
+    // block placed while the pillar's base pays one. What arrives is now the same in
+    // both legs, because charging the structure double AND handing the newcomer half
+    // was one event billed to two accounts. This test is where both numbers sit side
+    // by side, so it is the clearest place to see that only one of them moved.
     private static final int PILLAR_X = 1;
     private static final int PILLAR_Z = 1;
     private static final int LEDGE_Z = 4;
@@ -622,7 +630,7 @@ public final class SIGameTests {
     private static final int REACH_STEPS = 3;
 
     @GameTest(template = "empty", timeoutTicks = 100)
-    public static void sidewaysCostsDoubleAndInheritsHalf(GameTestHelper helper) {
+    public static void sidewaysCostsDoubleAndInheritsInFull(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         WbiReg reg = WbiReg.of(level);
         Block mat = Blocks.STONE;
@@ -701,9 +709,17 @@ public final class SIGameTests {
         helper.assertTrue(pillarTip == natural,
                 "a block set on TOP inherits in full: expected " + natural
                         + ", got " + pillarTip);
-        helper.assertTrue(ledgeTip == natural / 2,
-                "a block set on the SIDE inherits half: expected " + (natural / 2)
-                        + ", got " + ledgeTip);
+        helper.assertTrue(ledgeTip == natural,
+                "since 0.7.10 a block set on the SIDE inherits in full, the same as"
+                        + " one set on TOP: expected " + natural + ", got " + ledgeTip);
+        helper.assertTrue(ledgeTip != natural / 2 && natural / 2 > 0,
+                "the fixture must be able to tell the rules apart: 0.6.3 through"
+                        + " 0.7.9 gave " + (natural / 2) + " here");
+        helper.assertTrue(ledgeSpent > pillarSpent,
+                "the sideways leg must still cost more than the upright one - that"
+                        + " charge is what replaced the halving, so if it ever goes"
+                        + " the ledge becomes free: ledge spent " + ledgeSpent
+                        + ", pillar spent " + pillarSpent);
         helper.succeed();
     }
 
@@ -778,7 +794,7 @@ public final class SIGameTests {
      * been worn on purpose.
      */
     @GameTest(template = "empty", timeoutTicks = 100)
-    public static void sideJointTakesHalfOfTheHostNotTheGuest(GameTestHelper helper) {
+    public static void sideJointDoesNotPenaliseAWeakGuestOnAStrongHost(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         WbiReg reg = WbiReg.of(level);
 
@@ -792,10 +808,12 @@ public final class SIGameTests {
         StructuralIntegrity.LOGGER.info(
                 "[SI-TEST] SIDE-JOINT weak-on-strong: host iron nat={} stored={}, "
                         + "guest stone nat={} assigned={} sideHost={} sideHostStored={}; "
-                        + "half-of-host={} half-of-guest={} (the pre-0.7.8 answer)",
+                        + "0.7.10 expects the guest's own {} - unchanged from every "
+                        + "earlier rule, which gave half-of-host={} (0.7.8/0.7.9, "
+                        + "clipped by stone) and half-of-guest={} (pre-0.7.8)",
                 natHost, hostStored, natGuest, guest.assigned(),
                 guest.sideHost(), guest.sideHostStored(),
-                natHost / 2, natGuest / 2);
+                natGuest, natHost / 2, natGuest / 2);
 
         helper.assertTrue(natHost >= 2 * natGuest,
                 "fixture is not measuring anything: iron " + natHost + " must be at least"
@@ -804,12 +822,15 @@ public final class SIGameTests {
                 "the report must name the HOST's rating: expected " + natHost
                         + ", got " + guest.sideHost());
         helper.assertTrue(guest.assigned() == natGuest,
-                "half of iron (" + (natHost / 2) + ") exceeds stone's own " + natGuest
-                        + ", so stone binds and arrives full: expected " + natGuest
-                        + ", got " + guest.assigned());
+                "the host holds more than stone can carry, so stone's own " + natGuest
+                        + " binds and it arrives full; got " + guest.assigned());
         helper.assertTrue(guest.assigned() > natGuest / 2,
                 "the pre-0.7.8 rule halved the GUEST and would have given "
                         + (natGuest / 2) + "; got " + guest.assigned());
+        helper.assertTrue(guest.assigned() == Math.min(natGuest, hostStored),
+                "0.7.10 is one min over two numbers - the guest's own rating and what"
+                        + " the host holds - with nothing else in it: expected "
+                        + Math.min(natGuest, hostStored) + ", got " + guest.assigned());
         helper.assertTrue(guest.sideHostStored() == hostStored,
                 "the report must also carry what the host still HELD: expected "
                         + hostStored + ", got " + guest.sideHostStored());
@@ -821,21 +842,25 @@ public final class SIGameTests {
     }
 
     /**
-     * The other direction, and the one that costs the player something: iron (80)
-     * hung on the side of stone (32) arrives at 16, half of the STONE.
+     * The direction the fraction actually cost something, and the case 0.7.10
+     * changes: iron (80) hung on the side of stone (32) now arrives at 32, not 16.
      *
-     * A joint is only as good as the material it was made against, so bolting a
-     * strong block to a weak wall does not import the strong block's rating. Under
-     * the rule this replaces the guest was capped at half of ITS own 80, or 40, and
-     * then clipped to the host's stored 32 - so it arrived at 32, twice what it now
-     * gets, and the wall it hung on made no difference to the joint.
+     * A joint is still only as good as the material it was made against - bolting a
+     * strong block to a weak wall does not import the strong block's rating, and
+     * the stone's 32 is still the ceiling. What is gone is the second cut on top of
+     * that ceiling. 0.7.8 and 0.7.9 both halved the host's contribution before
+     * applying it, so the guest arrived at 16 while the wall it hung on was sitting
+     * on a full 32, and the missing 16 was charged to nobody and accounted for
+     * nowhere.
      *
-     * As above, 0.7.9 leaves this answer alone because the fixture's host is
-     * unworn. Half of the host's rating and half of what the host still holds are
-     * the same 16 here, and only wear separates them.
+     * The sideways joint is not free, and it never was. The load chain bills it at
+     * {@link SIConfig#sidewaysLoadMultiplier} - double, by default - to the sturdier
+     * of the two blocks, which is a real cost taken out of the structure at the
+     * moment of placement. Halving the newcomer as well was a second charge for one
+     * event, and this test is where the two used to be visible as one number.
      */
     @GameTest(template = "empty", timeoutTicks = 100)
-    public static void sideJointToAWeakHostLimitsAStrongGuest(GameTestHelper helper) {
+    public static void sideJointToAWeakHostGivesWhatTheHostHolds(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         WbiReg reg = WbiReg.of(level);
 
@@ -849,25 +874,30 @@ public final class SIGameTests {
         StructuralIntegrity.LOGGER.info(
                 "[SI-TEST] SIDE-JOINT strong-on-weak: host stone nat={} stored={}, "
                         + "guest iron nat={} assigned={} sideHost={} sideHostStored={}; "
-                        + "half-of-host={} host-stored={} (the pre-0.7.8 answer)",
+                        + "0.7.10 expects the host's whole {}, where 0.7.8/0.7.9 "
+                        + "halved it to {}",
                 natHost, hostStored, natGuest, guest.assigned(),
                 guest.sideHost(), guest.sideHostStored(),
-                natHost / 2, hostStored);
+                hostStored, natHost / 2);
 
         helper.assertTrue(guest.sideHost() == natHost,
                 "the report must name the HOST's rating: expected " + natHost
                         + ", got " + guest.sideHost());
-        helper.assertTrue(guest.assigned() == natHost / 2,
-                "a strong block on a weak wall takes half the WALL: expected "
-                        + (natHost / 2) + ", got " + guest.assigned());
-        helper.assertTrue(guest.assigned() < hostStored,
-                "the pre-0.7.8 rule clipped to the host's stored " + hostStored
-                        + " and never halved it; got " + guest.assigned());
+        helper.assertTrue(guest.assigned() == hostStored,
+                "a strong block on a weak wall takes the WALL's whole remaining "
+                        + hostStored + ", not a fraction of it; got " + guest.assigned());
+        helper.assertTrue(guest.assigned() != natHost / 2,
+                "the fixture must be able to tell the rules apart: half of "
+                        + natHost + " is " + (natHost / 2) + ", which 0.7.8 and 0.7.9"
+                        + " would have given, and 0.7.10 gives " + guest.assigned());
+        helper.assertTrue(guest.assigned() < natGuest,
+                "the host must still bind - iron's own " + natGuest + " is not"
+                        + " importable through a weak wall; got " + guest.assigned());
         helper.assertTrue(guest.sideHostStored() == hostStored
                         && guest.sideHostStored() == natHost,
                 "unworn host: rating " + natHost + " and stored "
-                        + guest.sideHostStored() + " must agree, which is why 0.7.9"
-                        + " leaves this case at " + guest.assigned());
+                        + guest.sideHostStored() + " must agree here, so this fixture"
+                        + " isolates the fraction and nothing else");
         helper.succeed();
     }
 
@@ -877,25 +907,30 @@ public final class SIGameTests {
     }
 
     /**
-     * 0.7.9: the fraction is of what the host still HOLDS, not of its rating.
+     * A worn host hands over what it has, whole.
      *
-     * Nothing above separates the two rules, because founding the host on the cliff
-     * leaves it at full natural and half of 80 is half of 80 either way. So this
-     * fixture wears the host deliberately - the row is set straight to 10, which is
-     * programming the precondition rather than reproducing it - and then hangs a
-     * stone guest off it.
+     * Nothing above separates the rules, because founding the host on the cliff
+     * leaves it at full natural and the fixture never wears it. So this one wears
+     * the host deliberately - the row is set straight to 10, which is programming
+     * the precondition rather than reproducing it - and then hangs a stone guest
+     * off it. Iron rated 80 holding 10, factor 0.5:
      *
-     * Iron rated 80 holding 10, factor 0.5:
-     *   0.7.8 read the RATING:  min(stone 32, floor(80 * 0.5) = 40, host stored 10) = 10
-     *   0.7.9 reads what is LEFT: min(stone 32, floor(10 * 0.5) = 5)               =  5
+     *   0.7.8  read the RATING:      min(stone 32, floor(80 * 0.5), host stored 10) = 10
+     *   0.7.9  halved what was LEFT: min(stone 32, floor(10 * 0.5))                =  5
+     *   0.7.10 takes what is LEFT:   min(stone 32, 10)                             = 10
      *
-     * Ten was the host's whole remaining strength handed over intact, because the
-     * stored value entered only as a ceiling applied after the fraction and the
-     * fraction itself was measured against a pristine iron block that no longer
-     * existed. Five is half of what the block being hung off actually has.
+     * 0.7.9 arrived at five by measuring the right block and then charging it twice
+     * - once by the fraction and again by the chain, which had already billed the
+     * sideways link. Ten is the whole of what the block being hung off actually
+     * has, which is the only limit the host can honestly impose.
+     *
+     * That it agrees with 0.7.8's answer is a coincidence of this fixture, not a
+     * revert: 0.7.8 reached 10 by halving a pristine rating and then clipping to the
+     * stored value, and would still read the rating on a host worn to 30. The
+     * assertion below is against the stored value directly.
      */
     @GameTest(template = "empty", timeoutTicks = 100)
-    public static void sideJointHalvesWhatTheHostHasLeftNotItsRating(GameTestHelper helper) {
+    public static void sideJointTakesWhatAWornHostHasLeftWhole(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         WbiReg reg = WbiReg.of(level);
 
@@ -910,19 +945,20 @@ public final class SIGameTests {
         int natHost = Integrity.naturalOf(level, probe, Blocks.IRON_BLOCK.defaultBlockState());
         int natGuest = Integrity.naturalOf(level, probe, Blocks.STONE.defaultBlockState());
         double f = SIConfig.sideInheritanceFactor();
-        int expected = Math.min(natGuest, (int) Math.floor(worn * f));
-        int pre079 = Math.min(Math.min(natGuest, (int) Math.floor(natHost * f)), worn);
+        int expected = Math.min(natGuest, worn);
+        int pre0710 = Math.min(natGuest, (int) Math.floor(worn * f));
 
         StructuralIntegrity.LOGGER.info(
                 "[SI-TEST] SIDE-JOINT worn host: iron nat={} fresh={} worn to {}; "
                         + "guest stone nat={} assigned={} sideHost={} sideHostStored={}; "
-                        + "0.7.9 expects {}, 0.7.8 would have given {}",
+                        + "0.7.10 expects {}, 0.7.9 would have halved it to {}",
                 natHost, fresh, worn, natGuest, guest.assigned(),
-                guest.sideHost(), guest.sideHostStored(), expected, pre079);
+                guest.sideHost(), guest.sideHostStored(), expected, pre0710);
 
-        helper.assertTrue(pre079 != expected,
-                "fixture is not measuring anything: both rules answer " + expected
-                        + " here, so pick a wear level where they differ");
+        helper.assertTrue(pre0710 != expected,
+                "fixture is not measuring anything: the fraction and its removal both"
+                        + " answer " + expected + " here, so pick a wear level where"
+                        + " they differ");
         helper.assertTrue(guest.sideHost() == natHost,
                 "the report must still name the host's RATING: expected " + natHost
                         + ", got " + guest.sideHost());
@@ -930,35 +966,47 @@ public final class SIGameTests {
                 "the report must name what the host HELD: expected " + worn
                         + ", got " + guest.sideHostStored());
         helper.assertTrue(guest.assigned() == expected,
-                "half of what the host has left (" + expected + "), not half of its"
-                        + " rating clipped to that (" + pre079 + "); got "
-                        + guest.assigned());
+                "the whole of what the host has left (" + expected + "), not half of"
+                        + " it (" + pre0710 + "); got " + guest.assigned());
+        helper.assertTrue(guest.assigned() == guest.sideHostStored(),
+                "the host is the binding limit here, so the guest must arrive holding"
+                        + " exactly what the host held: " + guest.sideHostStored()
+                        + ", got " + guest.assigned());
         helper.succeed();
     }
 
     /**
-     * The consequence that makes 0.7.9 worth having: a ledge run now thins out.
+     * The consequence 0.7.10 is being made for: a ledge run stops thinning out.
      *
-     * Natural integrity is a constant per material, so reading the rating capped
-     * every block along a uniform run at the same half of the same number - an
-     * iron run off an iron wall read 40, 40, 40 and would have gone on reading 40
-     * until it hit the load chain's own limits. Reading what the host HOLDS makes
-     * the same run halve at every step: 40, 20, 10. A cantilever ends on its own,
-     * with no distance rule, no length limit and no config key - which is the
-     * general mechanism the old form needed a special case to fake.
+     * 0.7.9 made this run read 40, 20, 10 and called the compounding its whole
+     * justification - a cantilever that ended on its own, with no distance rule and
+     * no config key. It was also the clearest picture of what the fraction was
+     * doing, which is charging the STRUCTURE for a shape the load chain had already
+     * charged it for. Three iron blocks off an iron wall are three ordinary
+     * placements, and none of them is weaker than iron.
+     *
+     * So the run now reads flat at full natural, and the ledge still ends - just
+     * for the reason the rest of the mod uses. Every placement runs the load chain
+     * back down through the run into the wall and the foundation, and a sideways
+     * link there bills double. The wall wears, the foundation wears, and a long
+     * enough cantilever brings itself down from the ROOT, which is where a real one
+     * fails. Nothing in that needs the newcomer to be punished on arrival.
      *
      * Each block is asserted on its ASSIGNED value, the number the rule produced at
      * placement time, not on its stored row afterwards. The rows keep moving as
      * later placements charge back down the run, and that charge is the load chain's
-     * business rather than this rule's.
+     * business rather than this rule's - which is exactly the separation 0.7.10
+     * restores.
      */
     @GameTest(template = "empty", timeoutTicks = 200)
-    public static void aLedgeRunHalvesAtEveryStepOutward(GameTestHelper helper) {
+    public static void aLedgeRunNoLongerThinsOutOnItsOwn(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         WbiReg reg = WbiReg.of(level);
 
         int hostStored = buildSideJointHost(helper, reg, Blocks.IRON_BLOCK);
         double f = SIConfig.sideInheritanceFactor();
+        int natGuest = Integrity.naturalOf(level, helper.absolutePos(BlockPos.ZERO),
+                Blocks.IRON_BLOCK.defaultBlockState());
 
         List<Integer> assigned = new ArrayList<>();
         List<Integer> readOff = new ArrayList<>();
@@ -978,41 +1026,49 @@ public final class SIGameTests {
             prev = p.assigned();
         }
 
+        List<Integer> halving = new ArrayList<>();
+        int decay = hostStored;
+        for (int step = 0; step < assigned.size(); step++) {
+            decay = (int) Math.floor(decay * f);
+            halving.add(decay);
+        }
         StructuralIntegrity.LOGGER.info(
                 "[SI-TEST] LEDGE RUN off an iron wall holding {}: assigned {} "
-                        + "(each read off {}); the pre-0.7.9 rule gave {}, {}, {}",
-                hostStored, assigned, readOff,
-                (int) Math.floor(hostStored * f), (int) Math.floor(hostStored * f),
-                (int) Math.floor(hostStored * f));
+                        + "(each read off {}); 0.7.9 would have given {}",
+                hostStored, assigned, readOff, halving);
 
-        int expect = hostStored;
         for (int step = 0; step < assigned.size(); step++) {
-            expect = (int) Math.floor(expect * f);
+            int expect = Math.min(natGuest, readOff.get(step));
             helper.assertTrue(assigned.get(step) == expect,
-                    "step " + (step + 1) + " must halve what the block before it held:"
-                            + " expected " + expect + ", got " + assigned.get(step));
+                    "step " + (step + 1) + " must take the whole of what the block"
+                            + " before it held, capped by its own rating: expected "
+                            + expect + ", got " + assigned.get(step));
         }
-        helper.assertTrue(assigned.get(2) < assigned.get(0),
-                "the run must thin out. The pre-0.7.9 rule held it flat at "
-                        + assigned.get(0) + " forever; got " + assigned);
+        helper.assertTrue(assigned.get(2) == assigned.get(0),
+                "the run must NOT thin out on its own any more. 0.7.9 halved it to "
+                        + halving + "; got " + assigned);
+        helper.assertTrue(assigned.get(2) > halving.get(2),
+                "fixture is not measuring anything: the halving rule and its removal"
+                        + " agree at " + assigned.get(2) + " on this run");
         helper.succeed();
     }
 
     /**
-     * The edge the config key exists for: a host so worn that half of what it has
-     * left rounds away to nothing.
+     * The edge that used to need a config key, and no longer needs one.
      *
-     * Two cases, and they are not the same case. A host holding ONE point still has
-     * something to give, and half of one is zero, so whether the guest arrives alive
-     * is exactly the question {@link SIConfig#sideJointNeverArrivesSpent} answers -
-     * floored, it arrives at one point, cracked but standing; unfloored, it arrives
-     * spent and the placement fails on the spot. Both are defensible, so the test
-     * asserts whichever the loaded config says rather than baking one in.
+     * A host holding ONE point had half of one to give, which rounds to nothing, so
+     * whether the guest arrived alive came down to a floor at {@code failAt + 1} and
+     * {@link SIConfig#sideJointNeverArrivesSpent} decided whether that floor applied.
+     * With no fraction there is no rounding: one point is handed over as one point,
+     * the guest arrives cracked but standing, and the key has nothing left to decide.
+     * It stays declared and unread - see {@link SIConfig#sideInheritanceFactor} for
+     * why an unread key is not a deleted key.
      *
-     * A host holding NOTHING is not a config question at all. There is no fraction
-     * of nothing, and flooring a dead wall into granting a live attachment is the
-     * one outcome neither setting wants, so the floor is skipped there and the guest
-     * gets zero whichever way the key is set.
+     * A host holding NOTHING still gives nothing, and it always did. That answer was
+     * never the key's to make and it is unchanged: {@code min(guest, 0)} is zero the
+     * same way the skipped floor was zero. Both cases are asserted here because the
+     * two used to be reached by different code paths and now are not, and a test that
+     * stops covering the second one would not notice if only the first survived.
      */
     @GameTest(template = "empty", timeoutTicks = 100)
     public static void sideJointAgainstANearlySpentHost(GameTestHelper helper) {
@@ -1026,7 +1082,9 @@ public final class SIGameTests {
 
         reg.set(hostAbs, failAt + 1);
         Integrity.Placed nearly = placeSideJointGuest(helper, reg, Blocks.STONE);
-        int expectNearly = floored ? failAt + 1 : 0;
+        // No fraction, so no rounding, so no floor: the one point survives the hand
+        // over whatever sideJointNeverArrivesSpent is still set to.
+        int expectNearly = failAt + 1;
 
         // Clear the guest's row and the block before the second case, so the second
         // placement is a placement and not a recompute of the first one's leftovers.
@@ -1038,16 +1096,17 @@ public final class SIGameTests {
         Integrity.Placed spent = placeSideJointGuest(helper, reg, Blocks.STONE);
 
         StructuralIntegrity.LOGGER.info(
-                "[SI-TEST] SIDE-JOINT spent host (sideJointNeverArrivesSpent={}, failAt={}): "
+                "[SI-TEST] SIDE-JOINT spent host (failAt={}; sideJointNeverArrivesSpent={} "
+                        + "is declared but unread since 0.7.10): "
                         + "host holding {} -> guest {} (expected {}); "
-                        + "host holding {} -> guest {} (expected 0, no config say)",
-                floored, failAt, failAt + 1, nearly.assigned(), expectNearly,
+                        + "host holding {} -> guest {} (expected 0)",
+                failAt, floored, failAt + 1, nearly.assigned(), expectNearly,
                 failAt, spent.assigned());
 
         helper.assertTrue(nearly.assigned() == expectNearly,
-                "against a host holding " + (failAt + 1) + " with the floor "
-                        + (floored ? "on" : "off") + ", the guest must arrive at "
-                        + expectNearly + "; got " + nearly.assigned());
+                "a host holding " + (failAt + 1) + " hands that point over whole, so"
+                        + " the guest arrives at " + expectNearly + " with the config"
+                        + " key out of it entirely; got " + nearly.assigned());
         helper.assertTrue(spent.assigned() == 0,
                 "a spent host has no fraction to give and the floor must not rescue"
                         + " it: expected 0, got " + spent.assigned());
@@ -1057,11 +1116,15 @@ public final class SIGameTests {
     /**
      * Reading a value that moves does not make the side joint move with it.
      *
-     * This is the one thing 0.7.9 was careful NOT to do. {@link Integrity#faceCap}
-     * is shared with {@link Integrity#recompute}, so a repair pass now re-reads a
-     * host that may have worn since the guest was placed, and {@code fresh} can come
-     * back lower than what the guest already holds. It never lands: recompute takes
-     * {@code max(before, fresh)} and only ever repairs upward.
+     * {@link Integrity#faceCap} is shared with {@link Integrity#recompute}, so a
+     * repair pass re-reads a host that may have worn since the guest was placed, and
+     * {@code fresh} can come back lower than what the guest already holds. It never
+     * lands: recompute takes {@code max(before, fresh)} and only ever repairs upward.
+     *
+     * 0.7.10 does not change this and could not have: removing the fraction changes
+     * how big {@code fresh} is, not whether a smaller {@code fresh} is allowed to
+     * land. The contract outlived the rule it was written against, which is the
+     * argument for having pinned it separately.
      *
      * So a worn host repairs its guest LESS than a sound one would, and never
      * demotes it. Lowering an already-placed block as its host degrades is a real

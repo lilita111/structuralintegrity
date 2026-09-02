@@ -85,19 +85,19 @@ public final class Integrity {
      *
      * @param support   the neighbour the block was built on, or null if it had none
      * @param supportAt that neighbour's integrity before the placement charged it
-     * @param sideHost  the natural RATING of the block the side cap was taken from,
-     *                  when the winning connection came in through a horizontal
-     *                  face, 0 otherwise. Reported but no longer used to compute
-     *                  anything: since 0.7.9 the fraction comes off sideHostStored.
-     *                  It stays in the report because the rating names the material
-     *                  and the stored value alone does not, and a log that cannot
-     *                  say what the host was made of cannot be read back later.
-     * @param sideHostStored  what that host still HELD, the value the fraction was
-     *                  actually taken of, 0 when no horizontal face won. The two
-     *                  numbers agree on a fresh host and separate as it wears,
-     *                  which is exactly the case a single number cannot report -
-     *                  0.7.8 and 0.7.9 are indistinguishable in a log that prints
-     *                  only one of them.
+     * @param sideHost  the natural RATING of the block the winning connection came
+     *                  in from, when it came in through a horizontal face, 0
+     *                  otherwise. Pure report since 0.7.10 - no rule reads it, and
+     *                  no rule reads the direction either. It stays because the
+     *                  rating names the material and a log that cannot say what the
+     *                  host was made of cannot be read back later, and because
+     *                  "this block is hanging off a wall" remains the first thing
+     *                  worth knowing when a structure comes apart.
+     * @param sideHostStored  what that host still HELD, which since 0.7.10 is simply
+     *                  what the guest inherited unless its own rating bound first.
+     *                  Kept beside the rating because the two agree on a fresh host
+     *                  and separate as it wears, and a line carrying one of them
+     *                  cannot tell any two of this mod's four side rules apart.
      * @param failed    every block the charge pass drove to {@link #FAIL_AT}
      * @param degraded  how many blocks the pass reduced, failed ones included
      */
@@ -722,7 +722,17 @@ public final class Integrity {
      * The most integrity a block may inherit through a side face, rather than by
      * sitting on top of its support.
      *
-     * A side joint is the weaker joint, so the block arrives holding a fraction of
+     * NOT CALLED since 0.7.10, which removed the side-joint fraction outright - see
+     * {@link #faceCap} for why the chain's existing sideways charge already covers
+     * the case this was invented for. Kept rather than deleted, along with both of
+     * its config keys, for the reason spelled out in {@link #chain}: a build that
+     * stops declaring a key does not leave that key alone in an existing TOML, it
+     * drops it, and the value silently reverts on the next downgrade. Keeping the
+     * routine intact also means restoring the old behaviour is re-pointing one call
+     * rather than reconstructing an argument from a changelog.
+     *
+     * What it did, while it did it: a side joint was the weaker joint, so the block
+     * arrived holding a fraction of
      * {@link SIConfig#sideInheritanceFactor} - half by default - of what the block
      * it was stuck TO still has left. Two separate questions were settled here one
      * version apart, and they are worth keeping apart while reading this.
@@ -792,31 +802,33 @@ public final class Integrity {
      * that carries the load - but what a face is worth once found is the same
      * question with the same answer, and it is not worth two copies free to drift.
      *
-     * Through a vertical face the block inherits as much as the host still holds,
-     * capped at its own natural: sitting on something is the sound joint, and the
-     * only ceilings are what the host has left and the material itself. Through a
-     * horizontal face what the host has left is first cut to
-     * {@link #sideInheritanceCap}, and the block's own natural still applies,
-     * because no joint however good makes a block sounder than the stuff it is
-     * made of.
+     * A block inherits what the block it was built against still holds, capped at
+     * its own natural rating. Both ceilings are real and neither is negotiable: a
+     * host cannot hand over strength it does not have, and no joint however good
+     * makes a block sounder than the stuff it is made of. Nothing else enters.
      *
-     * Since 0.7.9 this returns the COMPLETE ceiling and its callers use what they
-     * are handed. Both used to take a further {@code min} against the host's stored
-     * value afterwards, which was right while the fraction came off the host's
-     * RATING - the stored value was a genuine second, independent limit - and is
-     * wrong now that the fraction comes off that very stored value. Applied twice,
-     * the outer clamp is a no-op that reads like a rule, and a no-op that reads
-     * like a rule is the thing someone later reinstates as a real one.
+     * 0.7.10 removed the side-joint fraction, and which direction the face points
+     * stopped mattering. Every version from the first through 0.7.9 charged a
+     * horizontal placement something extra - first half of the guest's own rating,
+     * then half of the host's rating, then half of what the host had left - and all
+     * three were the same idea, that a sideways joint should cost the newcomer.
      *
-     * It no longer needs the level or the neighbour's position either: the host
-     * enters purely as the number it currently holds. Only {@link #place} still
-     * looks the host's material up, and only to name it in the report.
+     * It should not, because the structure is already charged for it. The load
+     * chain has always billed a sideways link at {@link SIConfig#sidewaysLoadMultiplier}
+     * - double by default - to whichever of the two blocks is the sturdier material.
+     * Halving the newcomer on top of that was a second penalty for one event, taken
+     * out of a different account, and it punished the structure for a shape the
+     * chain had already priced. What survives is the chain's charge, which is where
+     * the cost belongs and where it was all along.
+     *
+     * So this is one {@code min} over two numbers, it needs neither the level nor
+     * the neighbour's position nor which way the face points, and it returns the
+     * COMPLETE ceiling - callers use what they are handed and clamp nothing
+     * afterwards. Only {@link #place} still looks the host's material up, and only
+     * to name it in the report.
      */
-    private static int faceCap(int hostStored, int ownNatural, boolean horizontal) {
-        if (!horizontal) {
-            return Math.min(ownNatural, hostStored);
-        }
-        return Math.min(ownNatural, sideInheritanceCap(hostStored));
+    private static int faceCap(int hostStored, int ownNatural) {
+        return Math.min(ownNatural, hostStored);
     }
 
     /**
@@ -963,12 +975,10 @@ public final class Integrity {
             // good as the material it was made against - and at its own natural too,
             // because a good joint does not make a block sounder than its material.
             boolean horizontal = dir.getAxis().isHorizontal();
-            // faceCap returns the whole ceiling since 0.7.9, the host's remaining
-            // strength included, so there is no second clamp to apply here. The old
-            // min(cap, at) was correct while the side fraction came off the host's
-            // rating; now that it comes off `at` itself, clamping again would be
-            // arithmetic that never changes an answer and reads like it might.
-            int candidate = faceCap(at, natural, horizontal);
+            // The whole ceiling, in one call, for every face. `horizontal` is still
+            // worked out above but only the report reads it now - what a face is
+            // worth stopped depending on which way it points in 0.7.10.
+            int candidate = faceCap(at, natural);
             if (candidate > best) {
                 best = candidate;
                 // Both halves of the report, and only for a horizontal win. The
@@ -1039,10 +1049,9 @@ public final class Integrity {
      * {@link #place} and {@link #chain} ask - for the one neighbour that is holding
      * this block up. A support reading {@link WbiReg#ANCHOR} is ground and settles
      * it outright at full natural; any other support hands over what it currently
-     * holds, capped by {@link #faceCap} - at {@code natural} when it is reached
-     * through a vertical face, and at {@link #sideInheritanceCap} of the SUPPORT's
-     * STORED value since 0.7.9, formerly of the SUPPORT's
-     * own rating through a horizontal one; and no support at
+     * holds, capped by {@link #faceCap} - at whichever is smaller of the block's
+     * own {@code natural} and what that support still holds, through any face in any
+     * direction since 0.7.10 removed the side fraction; and no support at
      * all hands over nothing. Then the row moves to the better of what it holds and
      * what that says - never down, because a repair that could damage is not a
      * repair, and a block standing stronger than its support warrants has earned
@@ -1110,20 +1119,20 @@ public final class Integrity {
                 // those are separate questions with separate answers. Asked through
                 // faceCap, the same routine place() asks, so the side rule cannot
                 // mean one thing on placement and another on repair.
-                // Same complete-ceiling contract as place(): no outer clamp.
+                // Same complete-ceiling contract as place(): no outer clamp, and
+                // since 0.7.10 no direction either.
                 //
-                // Worth being explicit about what this does NOT do. Reading the
-                // fraction off a value that moves means a repair pass re-reads a
-                // host that may have worn since the guest was placed, so `fresh`
-                // can come back lower than what the guest already holds. It never
-                // takes effect: `after` is max(before, fresh) a few lines down, and
-                // recompute only ever repairs upward. A worn host therefore repairs
-                // its guest LESS than a sound one would, and never demotes it.
-                // Lowering an already-placed block as its host degrades is a real
-                // and arguably desirable behaviour, but it is a change in kind - the
-                // side joint would stop being settled at placement time - and it
+                // Worth being explicit about what this does NOT do, because reading
+                // a value that moves still means a repair pass re-reads a host that
+                // may have worn since the guest was placed, so `fresh` can come back
+                // lower than what the guest already holds. It never takes effect:
+                // `after` is max(before, fresh) a few lines down, and recompute only
+                // ever repairs upward. A worn host therefore repairs its guest LESS
+                // than a sound one would, and never demotes it. Lowering an
+                // already-placed block as its host degrades is a change in kind -
+                // the joint would stop being settled at placement time - and it
                 // belongs to the 0.8.0 rewrite, not to a point release.
-                best = faceCap(at, natural, support.getY() == pos.getY());
+                best = faceCap(at, natural);
             }
         }
 

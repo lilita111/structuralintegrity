@@ -410,6 +410,13 @@ public final class SIConfig {
                     "founding on rock is free whichever face touches it. 1.0 disables the",
                     "rule and hands over the support's whole remaining value.")
             .defineInRange("sideInheritanceFactor", 0.5, 0.0, 1.0);
+    // Unread since 0.7.10, which removed the side-joint fraction: a block placed
+    // against a vertical face now inherits what that face's block holds, the same
+    // as one set on top of it, and the sideways cost is charged where it always
+    // was - to the load chain, at sidewaysLoadMultiplier. Both this key and
+    // sideJointNeverArrivesSpent below stay DECLARED for the reason given at
+    // Integrity.chain(): dropping a declaration does not leave the key alone in an
+    // existing TOML, it removes it, and the value silently reverts on a downgrade.
 
     private static final ModConfigSpec.BooleanValue SIDE_JOINT_NEVER_ARRIVES_SPENT = B
             .comment("true: a block placed against a side face never arrives already spent -",
