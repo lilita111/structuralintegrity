@@ -394,18 +394,36 @@ public final class SIConfig {
             .define("sidewaysMultiplierOnRestore", true);
 
     private static final ModConfigSpec.DoubleValue SIDE_INHERITANCE_FACTOR = B
-            .comment("What fraction of the SUPPORT's natural integrity a block gets when it",
-                    "is placed against the SIDE of that support instead of on top of it. A",
-                    "side joint is only as good as the material it was made against, so a",
+            .comment("What fraction of the SUPPORT's REMAINING integrity a block gets when",
+                    "it is placed against the SIDE of that support instead of on top of it.",
+                    "A side joint is only as good as the material it was made against, so a",
                     "shelf bolted to deepslate is a better shelf than the same shelf bolted",
                     "to planks. The result is still capped at the placed block's own",
                     "natural - a good joint does not make a block sounder than its material.",
-                    "The fraction is of the support's NATURAL rating, a per-material",
-                    "constant, not of the value it currently holds, so a ledge is uniformly",
-                    "half-strength rather than halving again at every block out. Ground is",
-                    "exempt - founding on rock is free whichever face touches it. 1.0",
-                    "disables the rule.")
+                    "As of 0.7.9 the fraction is of what the support currently HOLDS, not of",
+                    "its natural rating: a wall one point from failing should not hand out",
+                    "half of a full stone rating. The two read the same on a fresh support",
+                    "and diverge as it wears - a stone wall worn 32 -> 10 gives 16 under the",
+                    "old rule and 5 under this one. It follows that a ledge now halves at",
+                    "every block out (16, 8, 4, 2) instead of being uniformly half-strength,",
+                    "so long cantilevers thin out and end on their own. Ground is exempt -",
+                    "founding on rock is free whichever face touches it. 1.0 disables the",
+                    "rule and hands over the support's whole remaining value.")
             .defineInRange("sideInheritanceFactor", 0.5, 0.0, 1.0);
+
+    private static final ModConfigSpec.BooleanValue SIDE_JOINT_NEVER_ARRIVES_SPENT = B
+            .comment("true: a block placed against a side face never arrives already spent -",
+                    "the inherited value is floored one point above failure, so a wall that",
+                    "is nearly gone still carries a cracked shelf. false: it arrives with",
+                    "whatever the fraction produced, and against a nearly-spent support that",
+                    "is nothing, so the placement fails immediately.",
+                    "Only reachable against a support that is itself nearly spent, where",
+                    "half of what little is left rounds away to zero - on any healthy",
+                    "structure the two settings are identical. A support that is ALREADY",
+                    "spent grants nothing either way; there is no fraction of nothing, and",
+                    "flooring a dead wall into granting a live attachment is the one outcome",
+                    "neither setting wants. true matches 0.7.8 and earlier.")
+            .define("sideJointNeverArrivesSpent", true);
 
     // ---- base integrity values --------------------------------------------
 
@@ -663,6 +681,10 @@ public final class SIConfig {
 
     public static double sideInheritanceFactor() {
         return SPEC.isLoaded() ? SIDE_INHERITANCE_FACTOR.get() : 0.5;
+    }
+
+    public static boolean sideJointNeverArrivesSpent() {
+        return !SPEC.isLoaded() || SIDE_JOINT_NEVER_ARRIVES_SPENT.get();
     }
 
     public static boolean breakShockwave() {

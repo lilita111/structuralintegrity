@@ -85,14 +85,25 @@ public final class Integrity {
      *
      * @param support   the neighbour the block was built on, or null if it had none
      * @param supportAt that neighbour's integrity before the placement charged it
-     * @param sideHost  the natural rating the side cap was taken from when the winning
-     *                  connection came in through a horizontal face, 0 otherwise
+     * @param sideHost  the natural RATING of the block the side cap was taken from,
+     *                  when the winning connection came in through a horizontal
+     *                  face, 0 otherwise. Reported but no longer used to compute
+     *                  anything: since 0.7.9 the fraction comes off sideHostStored.
+     *                  It stays in the report because the rating names the material
+     *                  and the stored value alone does not, and a log that cannot
+     *                  say what the host was made of cannot be read back later.
+     * @param sideHostStored  what that host still HELD, the value the fraction was
+     *                  actually taken of, 0 when no horizontal face won. The two
+     *                  numbers agree on a fresh host and separate as it wears,
+     *                  which is exactly the case a single number cannot report -
+     *                  0.7.8 and 0.7.9 are indistinguishable in a log that prints
+     *                  only one of them.
      * @param failed    every block the charge pass drove to {@link #FAIL_AT}
      * @param degraded  how many blocks the pass reduced, failed ones included
      */
     public record Placed(
             BlockPos pos, int natural, int assigned,
-            @Nullable BlockPos support, int supportAt, int sideHost,
+            @Nullable BlockPos support, int supportAt, int sideHost, int sideHostStored,
             boolean onAnchor, List<BlockPos> failed, int degraded, boolean capped,
             String trace
     ) {}
@@ -712,34 +723,63 @@ public final class Integrity {
      * sitting on top of its support.
      *
      * A side joint is the weaker joint, so the block arrives holding a fraction of
-     * {@link SIConfig#sideInheritanceFactor} - half by default - of the natural
-     * rating of the material it was stuck TO. The joint is a property of what is
-     * being joined to, not of what is being hung on it: a shelf bolted to deepslate
-     * is a better shelf than the same shelf bolted to planks, and before 0.7.8 the
-     * host had no say at all, because the fraction was taken of the placed block's
-     * own rating and the host only ever entered as a separate {@code min} against
-     * its stored value.
+     * {@link SIConfig#sideInheritanceFactor} - half by default - of what the block
+     * it was stuck TO still has left. Two separate questions were settled here one
+     * version apart, and they are worth keeping apart while reading this.
      *
-     * Taking the fraction from the host does not make a ledge decay exponentially,
-     * which is the trap the own-material form existed to avoid. Natural integrity is
-     * a constant per material, not a running value, so every block out along a
-     * uniform ledge is capped at the same half of that one material's rating - the
-     * same number the old form produced. Halving the INHERITED value, which is what
-     * would compound, is still not what happens here.
+     * WHICH block is measured was settled in 0.7.8: the host, not the guest. A
+     * joint is a property of what is being joined TO, not of what is being hung on
+     * it, so a shelf bolted to deepslate is a better shelf than the same shelf
+     * bolted to planks. Before 0.7.8 the fraction came off the placed block's own
+     * rating and the host only ever entered as a separate {@code min} afterwards.
      *
-     * Halving alone never destroys a block. A material that would have stood at 1
-     * still stands at 1 - cracked, but not arriving already spent.
+     * WHAT is measured on that host was settled in 0.7.9: its stored value, not its
+     * natural rating. Natural integrity says what a material is CAPABLE of; stored
+     * integrity says what this particular block still has to GIVE. A side
+     * attachment is carried entirely by the block it hangs off, so what it can
+     * inherit is bounded by what that block actually has, not by what a pristine
+     * example of the same stone would have had. Reading the rating let a wall one
+     * point from failing hand out half of a full stone rating, which is the same
+     * shape as both 0.7.7 defects - a number derived from the material where it
+     * should have been read from the state.
+     *
+     * So the host's stored value stops being a ceiling applied after the fraction
+     * and becomes the thing the fraction is taken OF. The two forms agree exactly
+     * on a fresh, unloaded host and diverge the moment it has taken any load: a
+     * stone wall worn from 32 down to 10 hands a guest 16 under the 0.7.8 form and
+     * 5 under this one.
+     *
+     * This DOES make a ledge decay outward, which the 0.7.8 form deliberately did
+     * not, and that reversal is the point of the change rather than a side effect
+     * of it. Natural integrity is a constant per material, so measuring it capped
+     * every block along a uniform run at the same half of the same rating - 16, 16,
+     * 16, 16. Stored value is not constant, so the run now halves at every step out
+     * - 16, 8, 4, 2 - and a cantilever thins to nothing on its own, with no distance
+     * rule, no length limit and no config key. The compounding the 0.7.8 note called
+     * a trap is the behaviour 0.7.9 wants.
+     *
+     * Whether the result is floored so a side block never arrives already spent is
+     * {@link SIConfig#sideJointNeverArrivesSpent}. It only bites against a host that
+     * is nearly spent itself, where half of what little is left rounds away to
+     * nothing: floored, a failing wall still carries a one-point shelf; unfloored,
+     * attaching to it fails the placement outright. Both are defensible, the choice
+     * is not the mod's to make silently, and floored is the default because it is
+     * what 0.7.8 did.
      */
-    private static int sideInheritanceCap(int natural) {
+    private static int sideInheritanceCap(int hostStored) {
         double f = SIConfig.sideInheritanceFactor();
         if (f >= 1.0) {
-            return natural;
+            return hostStored;
         }
         int failAt = SIConfig.failAt();
-        if (natural <= failAt) {
-            return natural;
+        if (hostStored <= failAt) {
+            // The host is spent. There is no fraction of nothing to hand over, and
+            // flooring here would let a dead wall grant a live attachment - the one
+            // outcome neither side of the config question above wants.
+            return hostStored;
         }
-        return Math.max(failAt + 1, (int) Math.floor(natural * f));
+        int share = (int) Math.floor(hostStored * f);
+        return SIConfig.sideJointNeverArrivesSpent() ? Math.max(failAt + 1, share) : share;
     }
 
     /**
@@ -752,19 +792,31 @@ public final class Integrity {
      * that carries the load - but what a face is worth once found is the same
      * question with the same answer, and it is not worth two copies free to drift.
      *
-     * Through a vertical face the block inherits up to its own natural: sitting on
-     * something is the sound joint, and the only ceiling is the material itself.
-     * Through a horizontal face the ceiling is {@link #sideInheritanceCap} of the
-     * HOST's natural rating, and then still its own natural, because no joint
-     * however good makes a block sounder than the stuff it is made of.
+     * Through a vertical face the block inherits as much as the host still holds,
+     * capped at its own natural: sitting on something is the sound joint, and the
+     * only ceilings are what the host has left and the material itself. Through a
+     * horizontal face what the host has left is first cut to
+     * {@link #sideInheritanceCap}, and the block's own natural still applies,
+     * because no joint however good makes a block sounder than the stuff it is
+     * made of.
+     *
+     * Since 0.7.9 this returns the COMPLETE ceiling and its callers use what they
+     * are handed. Both used to take a further {@code min} against the host's stored
+     * value afterwards, which was right while the fraction came off the host's
+     * RATING - the stored value was a genuine second, independent limit - and is
+     * wrong now that the fraction comes off that very stored value. Applied twice,
+     * the outer clamp is a no-op that reads like a rule, and a no-op that reads
+     * like a rule is the thing someone later reinstates as a real one.
+     *
+     * It no longer needs the level or the neighbour's position either: the host
+     * enters purely as the number it currently holds. Only {@link #place} still
+     * looks the host's material up, and only to name it in the report.
      */
-    private static int faceCap(ServerLevel level, BlockPos neighbour,
-                               int ownNatural, boolean horizontal) {
+    private static int faceCap(int hostStored, int ownNatural, boolean horizontal) {
         if (!horizontal) {
-            return ownNatural;
+            return Math.min(ownNatural, hostStored);
         }
-        int hostNatural = naturalOf(level, neighbour, level.getBlockState(neighbour));
-        return Math.min(ownNatural, sideInheritanceCap(hostNatural));
+        return Math.min(ownNatural, sideInheritanceCap(hostStored));
     }
 
     /**
@@ -879,7 +931,7 @@ public final class Integrity {
         if (support == null) {
             // Placed touching nothing structural. It supports itself and no more.
             reg.setEntry(pos, 0);
-            return new Placed(pos.immutable(), natural, 0, null, 0, 0, false, List.of(), 0, false, "");
+            return new Placed(pos.immutable(), natural, 0, null, 0, 0, 0, false, List.of(), 0, false, "");
         }
 
         // The value comes from the strongest connection, not blindly from below -
@@ -894,6 +946,7 @@ public final class Integrity {
         // whole point of 0.7.8 is which block that number is read off, and a report
         // that shows the result alone cannot tell the two rules apart.
         int sideHost = 0;
+        int sideHostStored = 0;
         for (Direction dir : DIRS) {
             BlockPos n = pos.relative(dir).immutable();
             if (!isStructural(level, n, null)) {
@@ -910,11 +963,20 @@ public final class Integrity {
             // good as the material it was made against - and at its own natural too,
             // because a good joint does not make a block sounder than its material.
             boolean horizontal = dir.getAxis().isHorizontal();
-            int cap = faceCap(level, n, natural, horizontal);
-            int candidate = Math.min(cap, at);
+            // faceCap returns the whole ceiling since 0.7.9, the host's remaining
+            // strength included, so there is no second clamp to apply here. The old
+            // min(cap, at) was correct while the side fraction came off the host's
+            // rating; now that it comes off `at` itself, clamping again would be
+            // arithmetic that never changes an answer and reads like it might.
+            int candidate = faceCap(at, natural, horizontal);
             if (candidate > best) {
                 best = candidate;
+                // Both halves of the report, and only for a horizontal win. The
+                // rating names the material, the stored value is what the fraction
+                // was taken of, and a log carrying one without the other cannot
+                // distinguish this rule from the one it replaced.
                 sideHost = horizontal ? naturalOf(level, n, level.getBlockState(n)) : 0;
+                sideHostStored = horizontal ? at : 0;
             }
         }
 
@@ -928,7 +990,7 @@ public final class Integrity {
             int assigned = initialValue(level, pos, natural, true);
             reg.setEntry(pos, assigned);
             return new Placed(pos.immutable(), natural, assigned,
-                    support.immutable(), WbiReg.ANCHOR, 0, true, List.of(), 0, false, "");
+                    support.immutable(), WbiReg.ANCHOR, 0, 0, true, List.of(), 0, false, "");
         }
 
         // Inherit the best footing, then charge the structure the load rests on.
@@ -940,7 +1002,7 @@ public final class Integrity {
         reg.setEntry(pos, assigned);
         Chained d = chain(level, reg, support, pos, null, -1);
         return new Placed(pos.immutable(), natural, assigned,
-                support.immutable(), best, sideHost,
+                support.immutable(), best, sideHost, sideHostStored,
                 false, d.failed(), d.count(), d.capped(), d.trace());
     }
 
@@ -979,6 +1041,7 @@ public final class Integrity {
      * it outright at full natural; any other support hands over what it currently
      * holds, capped by {@link #faceCap} - at {@code natural} when it is reached
      * through a vertical face, and at {@link #sideInheritanceCap} of the SUPPORT's
+     * STORED value since 0.7.9, formerly of the SUPPORT's
      * own rating through a horizontal one; and no support at
      * all hands over nothing. Then the row moves to the better of what it holds and
      * what that says - never down, because a repair that could damage is not a
@@ -1047,8 +1110,20 @@ public final class Integrity {
                 // those are separate questions with separate answers. Asked through
                 // faceCap, the same routine place() asks, so the side rule cannot
                 // mean one thing on placement and another on repair.
-                int cap = faceCap(level, support, natural, support.getY() == pos.getY());
-                best = Math.min(cap, at);
+                // Same complete-ceiling contract as place(): no outer clamp.
+                //
+                // Worth being explicit about what this does NOT do. Reading the
+                // fraction off a value that moves means a repair pass re-reads a
+                // host that may have worn since the guest was placed, so `fresh`
+                // can come back lower than what the guest already holds. It never
+                // takes effect: `after` is max(before, fresh) a few lines down, and
+                // recompute only ever repairs upward. A worn host therefore repairs
+                // its guest LESS than a sound one would, and never demotes it.
+                // Lowering an already-placed block as its host degrades is a real
+                // and arguably desirable behaviour, but it is a change in kind - the
+                // side joint would stop being settled at placement time - and it
+                // belongs to the 0.8.0 rewrite, not to a point release.
+                best = faceCap(at, natural, support.getY() == pos.getY());
             }
         }
 

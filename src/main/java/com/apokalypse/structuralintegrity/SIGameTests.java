@@ -768,6 +768,14 @@ public final class SIGameTests {
      * so the same stone arrived at 16. That number is asserted against directly:
      * a stone shelf bolted to iron is a better shelf than a stone shelf bolted to
      * stone, and before 0.7.8 the host had no say in it at all.
+     *
+     * 0.7.9 moved the fraction from the host's rating onto the host's stored value
+     * and this test did not change, which is the point: the fixture founds its host
+     * on the cliff, so the host is unworn and the two numbers are the same number.
+     * That agreement on a fresh build is a property worth pinning rather than a
+     * coincidence worth ignoring, so the test now asserts it directly - and it is
+     * exactly why the divergence needs its own fixture below, with a host that has
+     * been worn on purpose.
      */
     @GameTest(template = "empty", timeoutTicks = 100)
     public static void sideJointTakesHalfOfTheHostNotTheGuest(GameTestHelper helper) {
@@ -783,9 +791,10 @@ public final class SIGameTests {
 
         StructuralIntegrity.LOGGER.info(
                 "[SI-TEST] SIDE-JOINT weak-on-strong: host iron nat={} stored={}, "
-                        + "guest stone nat={} assigned={} sideHost={}; "
+                        + "guest stone nat={} assigned={} sideHost={} sideHostStored={}; "
                         + "half-of-host={} half-of-guest={} (the pre-0.7.8 answer)",
-                natHost, hostStored, natGuest, guest.assigned(), guest.sideHost(),
+                natHost, hostStored, natGuest, guest.assigned(),
+                guest.sideHost(), guest.sideHostStored(),
                 natHost / 2, natGuest / 2);
 
         helper.assertTrue(natHost >= 2 * natGuest,
@@ -801,6 +810,13 @@ public final class SIGameTests {
         helper.assertTrue(guest.assigned() > natGuest / 2,
                 "the pre-0.7.8 rule halved the GUEST and would have given "
                         + (natGuest / 2) + "; got " + guest.assigned());
+        helper.assertTrue(guest.sideHostStored() == hostStored,
+                "the report must also carry what the host still HELD: expected "
+                        + hostStored + ", got " + guest.sideHostStored());
+        helper.assertTrue(guest.sideHostStored() == guest.sideHost(),
+                "an unworn host makes the 0.7.8 and 0.7.9 rules agree, and this"
+                        + " fixture founds its host, so rating " + guest.sideHost()
+                        + " and stored " + guest.sideHostStored() + " must match");
         helper.succeed();
     }
 
@@ -813,6 +829,10 @@ public final class SIGameTests {
      * the rule this replaces the guest was capped at half of ITS own 80, or 40, and
      * then clipped to the host's stored 32 - so it arrived at 32, twice what it now
      * gets, and the wall it hung on made no difference to the joint.
+     *
+     * As above, 0.7.9 leaves this answer alone because the fixture's host is
+     * unworn. Half of the host's rating and half of what the host still holds are
+     * the same 16 here, and only wear separates them.
      */
     @GameTest(template = "empty", timeoutTicks = 100)
     public static void sideJointToAWeakHostLimitsAStrongGuest(GameTestHelper helper) {
@@ -828,9 +848,10 @@ public final class SIGameTests {
 
         StructuralIntegrity.LOGGER.info(
                 "[SI-TEST] SIDE-JOINT strong-on-weak: host stone nat={} stored={}, "
-                        + "guest iron nat={} assigned={} sideHost={}; "
+                        + "guest iron nat={} assigned={} sideHost={} sideHostStored={}; "
                         + "half-of-host={} host-stored={} (the pre-0.7.8 answer)",
-                natHost, hostStored, natGuest, guest.assigned(), guest.sideHost(),
+                natHost, hostStored, natGuest, guest.assigned(),
+                guest.sideHost(), guest.sideHostStored(),
                 natHost / 2, hostStored);
 
         helper.assertTrue(guest.sideHost() == natHost,
@@ -842,6 +863,242 @@ public final class SIGameTests {
         helper.assertTrue(guest.assigned() < hostStored,
                 "the pre-0.7.8 rule clipped to the host's stored " + hostStored
                         + " and never halved it; got " + guest.assigned());
+        helper.assertTrue(guest.sideHostStored() == hostStored
+                        && guest.sideHostStored() == natHost,
+                "unworn host: rating " + natHost + " and stored "
+                        + guest.sideHostStored() + " must agree, which is why 0.7.9"
+                        + " leaves this case at " + guest.assigned());
+        helper.succeed();
+    }
+
+    /** Where {@link #buildSideJointHost} puts the host, so a test can wear it. */
+    private static BlockPos sideJointHostPos() {
+        return new BlockPos(FLOOR_MIN + 1, LEDGE_Y, LEDGE_Z);
+    }
+
+    /**
+     * 0.7.9: the fraction is of what the host still HOLDS, not of its rating.
+     *
+     * Nothing above separates the two rules, because founding the host on the cliff
+     * leaves it at full natural and half of 80 is half of 80 either way. So this
+     * fixture wears the host deliberately - the row is set straight to 10, which is
+     * programming the precondition rather than reproducing it - and then hangs a
+     * stone guest off it.
+     *
+     * Iron rated 80 holding 10, factor 0.5:
+     *   0.7.8 read the RATING:  min(stone 32, floor(80 * 0.5) = 40, host stored 10) = 10
+     *   0.7.9 reads what is LEFT: min(stone 32, floor(10 * 0.5) = 5)               =  5
+     *
+     * Ten was the host's whole remaining strength handed over intact, because the
+     * stored value entered only as a ceiling applied after the fraction and the
+     * fraction itself was measured against a pristine iron block that no longer
+     * existed. Five is half of what the block being hung off actually has.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void sideJointHalvesWhatTheHostHasLeftNotItsRating(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        int fresh = buildSideJointHost(helper, reg, Blocks.IRON_BLOCK);
+        BlockPos hostAbs = helper.absolutePos(sideJointHostPos());
+        final int worn = 10;
+        reg.set(hostAbs, worn);
+
+        Integrity.Placed guest = placeSideJointGuest(helper, reg, Blocks.STONE);
+
+        BlockPos probe = helper.absolutePos(BlockPos.ZERO);
+        int natHost = Integrity.naturalOf(level, probe, Blocks.IRON_BLOCK.defaultBlockState());
+        int natGuest = Integrity.naturalOf(level, probe, Blocks.STONE.defaultBlockState());
+        double f = SIConfig.sideInheritanceFactor();
+        int expected = Math.min(natGuest, (int) Math.floor(worn * f));
+        int pre079 = Math.min(Math.min(natGuest, (int) Math.floor(natHost * f)), worn);
+
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] SIDE-JOINT worn host: iron nat={} fresh={} worn to {}; "
+                        + "guest stone nat={} assigned={} sideHost={} sideHostStored={}; "
+                        + "0.7.9 expects {}, 0.7.8 would have given {}",
+                natHost, fresh, worn, natGuest, guest.assigned(),
+                guest.sideHost(), guest.sideHostStored(), expected, pre079);
+
+        helper.assertTrue(pre079 != expected,
+                "fixture is not measuring anything: both rules answer " + expected
+                        + " here, so pick a wear level where they differ");
+        helper.assertTrue(guest.sideHost() == natHost,
+                "the report must still name the host's RATING: expected " + natHost
+                        + ", got " + guest.sideHost());
+        helper.assertTrue(guest.sideHostStored() == worn,
+                "the report must name what the host HELD: expected " + worn
+                        + ", got " + guest.sideHostStored());
+        helper.assertTrue(guest.assigned() == expected,
+                "half of what the host has left (" + expected + "), not half of its"
+                        + " rating clipped to that (" + pre079 + "); got "
+                        + guest.assigned());
+        helper.succeed();
+    }
+
+    /**
+     * The consequence that makes 0.7.9 worth having: a ledge run now thins out.
+     *
+     * Natural integrity is a constant per material, so reading the rating capped
+     * every block along a uniform run at the same half of the same number - an
+     * iron run off an iron wall read 40, 40, 40 and would have gone on reading 40
+     * until it hit the load chain's own limits. Reading what the host HOLDS makes
+     * the same run halve at every step: 40, 20, 10. A cantilever ends on its own,
+     * with no distance rule, no length limit and no config key - which is the
+     * general mechanism the old form needed a special case to fake.
+     *
+     * Each block is asserted on its ASSIGNED value, the number the rule produced at
+     * placement time, not on its stored row afterwards. The rows keep moving as
+     * later placements charge back down the run, and that charge is the load chain's
+     * business rather than this rule's.
+     */
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void aLedgeRunHalvesAtEveryStepOutward(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        int hostStored = buildSideJointHost(helper, reg, Blocks.IRON_BLOCK);
+        double f = SIConfig.sideInheritanceFactor();
+
+        List<Integer> assigned = new ArrayList<>();
+        List<Integer> readOff = new ArrayList<>();
+        int prev = hostStored;
+        for (int step = 1; step <= 3; step++) {
+            BlockPos local = new BlockPos(FLOOR_MIN + 1 + step, LEDGE_Y, LEDGE_Z);
+            helper.setBlock(local, Blocks.IRON_BLOCK);
+            Integrity.Placed p = Integrity.place(level, reg, helper.absolutePos(local));
+            helper.assertTrue(p != null, "ledge step " + step + " was not structural");
+            helper.assertTrue(!p.onAnchor(),
+                    "ledge step " + step + " founded on ground - the run has left the plot");
+            helper.assertTrue(p.sideHostStored() == prev,
+                    "step " + step + " must read the block before it, which held " + prev
+                            + "; it read " + p.sideHostStored());
+            assigned.add(p.assigned());
+            readOff.add(p.sideHostStored());
+            prev = p.assigned();
+        }
+
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] LEDGE RUN off an iron wall holding {}: assigned {} "
+                        + "(each read off {}); the pre-0.7.9 rule gave {}, {}, {}",
+                hostStored, assigned, readOff,
+                (int) Math.floor(hostStored * f), (int) Math.floor(hostStored * f),
+                (int) Math.floor(hostStored * f));
+
+        int expect = hostStored;
+        for (int step = 0; step < assigned.size(); step++) {
+            expect = (int) Math.floor(expect * f);
+            helper.assertTrue(assigned.get(step) == expect,
+                    "step " + (step + 1) + " must halve what the block before it held:"
+                            + " expected " + expect + ", got " + assigned.get(step));
+        }
+        helper.assertTrue(assigned.get(2) < assigned.get(0),
+                "the run must thin out. The pre-0.7.9 rule held it flat at "
+                        + assigned.get(0) + " forever; got " + assigned);
+        helper.succeed();
+    }
+
+    /**
+     * The edge the config key exists for: a host so worn that half of what it has
+     * left rounds away to nothing.
+     *
+     * Two cases, and they are not the same case. A host holding ONE point still has
+     * something to give, and half of one is zero, so whether the guest arrives alive
+     * is exactly the question {@link SIConfig#sideJointNeverArrivesSpent} answers -
+     * floored, it arrives at one point, cracked but standing; unfloored, it arrives
+     * spent and the placement fails on the spot. Both are defensible, so the test
+     * asserts whichever the loaded config says rather than baking one in.
+     *
+     * A host holding NOTHING is not a config question at all. There is no fraction
+     * of nothing, and flooring a dead wall into granting a live attachment is the
+     * one outcome neither setting wants, so the floor is skipped there and the guest
+     * gets zero whichever way the key is set.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void sideJointAgainstANearlySpentHost(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        buildSideJointHost(helper, reg, Blocks.IRON_BLOCK);
+        BlockPos hostAbs = helper.absolutePos(sideJointHostPos());
+        boolean floored = SIConfig.sideJointNeverArrivesSpent();
+        int failAt = SIConfig.failAt();
+
+        reg.set(hostAbs, failAt + 1);
+        Integrity.Placed nearly = placeSideJointGuest(helper, reg, Blocks.STONE);
+        int expectNearly = floored ? failAt + 1 : 0;
+
+        // Clear the guest's row and the block before the second case, so the second
+        // placement is a placement and not a recompute of the first one's leftovers.
+        BlockPos guestLocal = new BlockPos(FLOOR_MIN + 2, LEDGE_Y, LEDGE_Z);
+        reg.clear(helper.absolutePos(guestLocal));
+        helper.setBlock(guestLocal, Blocks.AIR);
+
+        reg.set(hostAbs, failAt);
+        Integrity.Placed spent = placeSideJointGuest(helper, reg, Blocks.STONE);
+
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] SIDE-JOINT spent host (sideJointNeverArrivesSpent={}, failAt={}): "
+                        + "host holding {} -> guest {} (expected {}); "
+                        + "host holding {} -> guest {} (expected 0, no config say)",
+                floored, failAt, failAt + 1, nearly.assigned(), expectNearly,
+                failAt, spent.assigned());
+
+        helper.assertTrue(nearly.assigned() == expectNearly,
+                "against a host holding " + (failAt + 1) + " with the floor "
+                        + (floored ? "on" : "off") + ", the guest must arrive at "
+                        + expectNearly + "; got " + nearly.assigned());
+        helper.assertTrue(spent.assigned() == 0,
+                "a spent host has no fraction to give and the floor must not rescue"
+                        + " it: expected 0, got " + spent.assigned());
+        helper.succeed();
+    }
+
+    /**
+     * Reading a value that moves does not make the side joint move with it.
+     *
+     * This is the one thing 0.7.9 was careful NOT to do. {@link Integrity#faceCap}
+     * is shared with {@link Integrity#recompute}, so a repair pass now re-reads a
+     * host that may have worn since the guest was placed, and {@code fresh} can come
+     * back lower than what the guest already holds. It never lands: recompute takes
+     * {@code max(before, fresh)} and only ever repairs upward.
+     *
+     * So a worn host repairs its guest LESS than a sound one would, and never
+     * demotes it. Lowering an already-placed block as its host degrades is a real
+     * and arguably desirable behaviour - it is what "structures come apart as they
+     * wear" would mean taken to its end - but it would stop the side joint being
+     * settled at placement time, which is a change in kind rather than in number,
+     * and it belongs to 0.8.0 rather than to a point release. Asserted here so that
+     * if 0.8.0 does make that change, this test is what tells it the old contract
+     * was deliberate.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void recomputeNeverLowersAGuestAsItsHostWears(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        buildSideJointHost(helper, reg, Blocks.IRON_BLOCK);
+        Integrity.Placed guest = placeSideJointGuest(helper, reg, Blocks.STONE);
+        BlockPos guestAbs = helper.absolutePos(new BlockPos(FLOOR_MIN + 2, LEDGE_Y, LEDGE_Z));
+        int held = reg.get(guestAbs);
+
+        reg.set(helper.absolutePos(sideJointHostPos()), 4);
+        Integrity.Recomputed r = Integrity.recompute(level, reg, guestAbs);
+
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] RECOMPUTE over a worn host: guest held {}, host worn to 4, "
+                        + "fresh={} after={} changed={} (a lowering would show after<before)",
+                held, r.fresh(), r.after(), r.changed());
+
+        helper.assertTrue(r.fresh() < held,
+                "the fixture must actually produce a lower fresh value or it proves"
+                        + " nothing: held " + held + ", fresh " + r.fresh());
+        helper.assertTrue(r.after() == held,
+                "recompute repairs upward only: the guest must still hold " + held
+                        + ", got " + r.after());
+        helper.assertTrue(reg.get(guestAbs) == held,
+                "the row itself must be untouched: expected " + held + ", got "
+                        + reg.get(guestAbs));
         helper.succeed();
     }
 

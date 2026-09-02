@@ -217,11 +217,11 @@ guessed at.
    would wear and break the stronger side even when config said only the weaker side
    gives way. With FROM never affected by the verdict, the shield may be redundant —
    or may still be doing real work via splinter wear specifically.
-5. **Does the `failAt + 1` floor survive the side-joint change of §9?** Reading the
-   half off the host's stored value means a host worn to 1 grants 0, and only the
-   floor makes the attachment live at all. Either a nearly-spent wall can still carry
-   a one-point shelf, or the floor is dropped for the side case and attaching to a
-   spent host fails outright.
+5. ~~**Does the `failAt + 1` floor survive the side-joint change of §9?**~~
+   Answered in 0.7.9 and no longer open: it became `sideJointNeverArrivesSpent`,
+   defaulting to true. Left in the list because the *default* is still a design
+   call 0.8.0 may want to revisit once disconnect-by-default changes what a
+   one-point block means.
 
 ## 8. Relationship to the two smaller specs
 
@@ -239,80 +239,66 @@ the `down != null` return in `supportOf`, delegating to the existing
 the strength vote, which would let load travel upward through a mass — is unrelated
 to anything in this document.
 
-## 9. Side inheritance measures what the host has left
+## 9. Side inheritance is already spent - 0.7.9 got there first
 
-0.7.8 changed which block the side cap is read off. Before it, placing a block
-against a vertical face gave the new block half of *its own* natural rating, so a
-shelf was worth the same whether it was bolted to deepslate or to planks. After it,
-the cap comes off the block being attached TO, through one `faceCap` helper that
-`place` and `recompute` both ask so the rule cannot mean one thing on placement and
-another on repair.
+This section was drafted as a 0.8.0 proposal and implemented the same day, so it is
+kept as a record of what the rule now is rather than as work outstanding. The
+0.8.0 rewrite inherits it.
 
-0.8.0 changes what is measured on that host: not its natural rating, but its stored
-integrity — what it actually has left right now.
+0.7.8 had already moved the side cap onto the host block: placing against a
+vertical face gives the guest a fraction - `sideInheritanceFactor`, half by default
+- of what it was stuck TO rather than of its own rating, so a shelf bolted to
+deepslate beats the same shelf bolted to planks. What it read on that host was the
+host's *natural rating*, which let a wall one point from failing hand out half of a
+full stone rating.
 
-Today the assigned value is
-
-```
-min( guest natural, floor(host natural * sideInheritanceFactor), host stored )
-```
-
-and under 0.8.0 it becomes
+0.7.9 re-points the same rule at the host's *stored* value:
 
 ```
-min( guest natural, floor(host stored * sideInheritanceFactor) )
+0.7.8:  min( guest natural, floor(host natural * factor), host stored )
+0.7.9:  min( guest natural, floor(host stored  * factor) )
 ```
 
-The host's stored value stops being a separate ceiling applied afterwards and
-becomes the thing the half is taken of. On a fresh, unloaded host the two agree, so
-nothing about a first build changes. They diverge the moment the host has taken any
-load at all: a stone wall worn from 32 down to 10 hands a guest 16 today and 5
-under this spec.
+The host's remaining strength stops being a ceiling applied after the fraction and
+becomes the thing the fraction is taken of, so `faceCap` returns the complete
+ceiling and neither caller clamps what it hands back. The two forms agree exactly
+on a fresh host and diverge as it wears - a stone wall worn 32 to 10 gives a guest
+16 under the old form and 5 under this one.
 
-### Why this is the right measure
+**Ledges now decay outward, and that is the point.** Natural integrity is constant
+per material, so the 0.7.8 form capped every block along a uniform run at the same
+half of the same rating - an iron run off an iron wall read 40, 40, 40 indefinitely.
+Stored value is not constant, so the run halves at every step: 40, 20, 10. A
+cantilever thins to nothing on its own, with no distance rule, no length limit and
+no config key - the general mechanism the old form needed a special case to fake.
 
-Natural integrity says what a material is capable of; stored integrity says what
-this particular block still has to give. A side attachment is carried entirely by
-the block it hangs off, so what it can inherit is bounded by what that block
-actually has, not by what a pristine example of the same stone would have had. The
-current rule lets a wall that is one point from failing still hand out half of a
-full stone rating, which is the same category of mistake as the 0.7.7 defects: a
-number derived from the material when it should have been read from the state.
+**Build order starts to matter.** The same shelf on the same wall is worth less hung
+after the wall has taken load than hung first. That follows directly from measuring
+state rather than material, and belongs in the changelog because a player will read
+it as a bug.
 
-### Two consequences worth having on the record
+**The floor question went to config, not to a guess.** `sideInheritanceCap` floored
+its result at `failAt + 1` so a side block never arrived already spent. Against a
+host worn to one point, half rounds away to nothing and only that floor grants
+anything at all - floored, a failing wall still carries a cracked one-point shelf;
+unfloored, attaching to it fails the placement outright. Both are defensible, so it
+is `sideJointNeverArrivesSpent`, defaulting true because that is what 0.7.8 did. A
+host that is *already* spent is not a config question: there is no fraction of
+nothing, the floor is skipped, and the guest gets zero either way.
 
-**Attachments decay outward along a run.** Because natural integrity is a constant
-per material, the current rule does not compound — every block out along a uniform
-ledge is capped at the same half of the same rating. Reading stored value instead
-makes it geometric: the first block off a 32-stored wall takes 16, the next takes
-8, then 4, then 2. A long cantilever thins out to nothing on its own, without a
-distance rule, a length limit or a config key. This is almost certainly desirable
-and is the strongest argument for the change, but it is a real behaviour shift and
-should be seen in a gametest before it is believed.
-
-**Build order starts to matter.** The same shelf on the same wall is worth less if
-you hang it after the wall has taken load than if you hang it first. That follows
-directly from measuring state rather than material and is consistent with the rest
-of the mod, but it is the kind of thing a player notices and calls a bug, so it
-belongs in the changelog rather than only in the code.
-
-### The one sub-question
-
-`sideInheritanceCap` floors its result at `failAt + 1`, so a side block never
-arrives already dead. Against a host worn to 1, half is 0 and the floor is the only
-thing that grants anything at all — a nearly-spent wall would still hand out a live,
-if minimal, attachment. Either that floor stays, and a wall about to fail can still
-carry a shelf worth one point, or the floor is dropped for the side case and
-attaching to a spent host simply fails the placement. This is a design call, not a
-mechanical consequence, and is listed with the §7 questions rather than answered
-here.
-
-There is a second-order version of the same question for `recompute`. Since
-`faceCap` is shared, a repair pass would re-read a host value that moves, so an
-already-placed guest can be lowered as its host wears. That reads as intended given
-the direction of 0.8.0 — structures come apart as they degrade — but it means the
-side joint stops being settled at placement time, which is a change in kind and not
-only in number.
+**One thing 0.7.9 deliberately did not do, and 0.8.0 may want to.** Because
+`faceCap` is shared with `recompute`, a repair pass now re-reads a host that may
+have worn since the guest was placed, so `fresh` can come back lower than what the
+guest already holds. It never lands - `recompute` takes `max(before, fresh)` and
+only ever repairs upward - so a worn host repairs its guest *less* than a sound one
+would and never demotes it. The draft of this section claimed the guest would be
+lowered; that was wrong about the existing code, and `recomputeNeverLowersAGuestAsItsHostWears`
+now pins the actual contract. Lowering an already-placed block as its host degrades
+is a real and arguably desirable behaviour - it is what "structures come apart as
+they wear" means taken to its end - but it stops the side joint being settled at
+placement time, which is a change in kind rather than in number. That is 0.8.0's
+call to make, and the test above is what will tell it the old contract was
+deliberate rather than accidental.
 
 ## 10. Test plan
 
@@ -330,19 +316,31 @@ a manual reproduction.
 - A pillar still behaves exactly as it does in 0.7.7 — this is the regression guard
   that proves the change is confined to the complex case.
 - The dry/real drift probe still agrees, as it does after the 0.7.7 brace rewrite.
-- A guest placed against a host worn to half its natural rating inherits half of the
-  worn value, not half of the rating — the assertion that separates §9 from 0.7.8.
-- A four-block ledge run off a full-strength wall halves at every step outward, and
-  the printed run reads 16, 8, 4, 2 rather than 16, 16, 16, 16.
-- The same guest placed on a fresh host and on a worn host gets different values, so
-  build order is shown to matter rather than assumed to.
-- `recompute` on an already-placed guest re-reads its host and lowers it as the host
-  wears, and a `place` followed by its matching break still cancels exactly.
+The four §9 tests below already exist and pass as of 0.7.9; they are listed so the
+rewrite knows what it must not break.
+
+- ✅ `sideJointHalvesWhatTheHostHasLeftNotItsRating` — a guest on an iron host worn
+  to 10 inherits 5, not the 10 the 0.7.8 rule gave. The assertion that separates the
+  two forms, and the fixture programs the wear rather than reproducing it.
+- ✅ `aLedgeRunHalvesAtEveryStepOutward` — an iron run off an iron wall reads
+  40, 20, 10 where the old rule held it flat at 40.
+- ✅ `sideJointAgainstANearlySpentHost` — both sides of
+  `sideJointNeverArrivesSpent`, plus the spent host that grants nothing either way.
+- ✅ `recomputeNeverLowersAGuestAsItsHostWears` — pins the monotonic-repair contract
+  the paragraph above describes, so 0.8.0 changes it on purpose or not at all.
+- Still owed by 0.8.0: a `place` followed by its matching break cancels exactly on a
+  worn host, not only on a fresh one.
 
 ---
 
 ## Revision log
 
+- **2026-09-02** — §9 shipped as 0.7.9-gamma, hours after being written as a
+  proposal, on "actually build this to 0.7.9 immediately". Rewritten from a proposal
+  into a record. The floor question became `sideJointNeverArrivesSpent` rather than
+  a decision, so §7 (5) is closed. One correction to the draft: it claimed `recompute`
+  would lower a guest as its host wears, which was wrong — `max(before, fresh)` makes
+  repair monotonic, and that contract is now pinned by a test rather than assumed.
 - **2026-09-02** — §9 added, from "you missed the tweak where placing blocks on the
   side gets half the integrity of the block placed on" plus "save this for 0.8.0".
   0.7.8 had already moved the side cap onto the host, but it reads the host's
