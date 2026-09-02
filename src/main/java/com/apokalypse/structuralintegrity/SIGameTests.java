@@ -2168,17 +2168,26 @@ public final class SIGameTests {
      * stairs is a single flat 20 for every stair in the game, so deepslate brick
      * stairs and stone brick stairs were literally the same block.
      *
-     * 0.7.11 gives deepslate the two rows it was missing. The numbers are not
-     * picked, they are the ratio the file already commits to at the raw rock, and
-     * that is exactly what this asserts - each deepslate row must be its stone
-     * counterpart scaled by deepslate/stone. Written that way the test has an
-     * opinion about the future: move stone or move deepslate and it names the rows
-     * that have to move with them, instead of mismatching a constant nobody can
-     * trace back to a reason.
+     * 0.7.11 gives deepslate the two rows it was missing. The ratio they carry is
+     * NOT the rock's own 36/32. Cut into the brick family, deepslate is worth a
+     * flat fifth more than stone, 6/5, and that is a choice rather than a
+     * derivation. The reason to make it is that a fifth lands WHOLE on both rows
+     * where the rock ratio does not: 40 * 6/5 = 48 and 20 * 6/5 = 24, both exact,
+     * against 45 and a 22.5 that had to be rounded up.
      *
-     * The bricks land on the ratio exactly, 40 * 36/32 = 45. The stairs cannot,
-     * because 20 * 1.125 is 22.5, so they round the way naturalOf's own derivation
-     * rounds - half up, to 23.
+     * So this asserts the ratio, never the values. One fraction, applied to each
+     * stone counterpart, with the division required to come out even - which is
+     * the justification for 6/5 made executable instead of merely claimed in a
+     * comment. Written that way the test has an opinion about the future: move
+     * stone bricks or stone brick stairs and it names the deepslate rows that have
+     * to move with them, rather than mismatching a constant nobody can trace back
+     * to a reason.
+     *
+     * One invariant sits underneath the choice. The cut ratio must never be MEANER
+     * than the rock ratio, because cutting deepslate into a shape should not cost
+     * it the advantage it already has as raw stone. 6/5 clears 36/32 today. The
+     * day someone re-tunes the raw rock past a fifth, that assert is what says the
+     * brick rows have quietly become the weaker link.
      *
      * Nothing is placed. naturalOf answers from the block state, and asking it
      * directly is the whole point: this is a test about the DATA, so a fixture that
@@ -2197,22 +2206,44 @@ public final class SIGameTests {
         int stoneStairs = Integrity.naturalOf(level, probe, Blocks.STONE_BRICK_STAIRS.defaultBlockState());
         int deepStairs = Integrity.naturalOf(level, probe, Blocks.DEEPSLATE_BRICK_STAIRS.defaultBlockState());
 
-        // The one formula, applied to both rows. Stone's value times the rock ratio.
-        int wantBricks = Math.round(stoneBricks * (float) deepslate / stone);
-        int wantStairs = Math.round(stoneStairs * (float) deepslate / stone);
+        // One fraction, both rows: deepslate cut into the brick family is worth a
+        // fifth more than stone. Not the rock's own 36/32 - that cannot divide 20
+        // evenly, and landing whole on BOTH rows is the entire reason 6/5 was
+        // picked over it. These two checks are that reason made executable.
+        final int CUT_NUM = 6, CUT_DEN = 5;
+        helper.assertTrue(stoneBricks * CUT_NUM % CUT_DEN == 0,
+                "the cut ratio " + CUT_NUM + "/" + CUT_DEN + " has to divide stone"
+                        + " bricks evenly, and " + stoneBricks + " * " + CUT_NUM
+                        + " / " + CUT_DEN + " does not come out whole - either pick"
+                        + " a fraction that does, or accept a rounded deepslate row"
+                        + " and say so here");
+        helper.assertTrue(stoneStairs * CUT_NUM % CUT_DEN == 0,
+                "the cut ratio " + CUT_NUM + "/" + CUT_DEN + " has to divide stone"
+                        + " brick stairs evenly, and " + stoneStairs + " * " + CUT_NUM
+                        + " / " + CUT_DEN + " does not come out whole");
+        int wantBricks = stoneBricks * CUT_NUM / CUT_DEN;
+        int wantStairs = stoneStairs * CUT_NUM / CUT_DEN;
 
         StructuralIntegrity.LOGGER.info(
-                "[SI-TEST] DEEPSLATE RANK rock {}/{} = {} | bricks stone={} deepslate={}"
-                        + " (want {}) | stairs stone={} deepslate={} (want {})"
+                "[SI-TEST] DEEPSLATE RANK rock {}/{} = {} | cut {}/{} = {}"
+                        + " | bricks stone={} deepslate={} (want {})"
+                        + " | stairs stone={} deepslate={} (want {})"
                         + " | 0.7.10 gave bricks 37, under stone's 40, and stairs 20,"
                         + " tied with stone's 20",
                 deepslate, stone, (float) deepslate / stone,
+                CUT_NUM, CUT_DEN, (float) CUT_NUM / CUT_DEN,
                 stoneBricks, deepBricks, wantBricks,
                 stoneStairs, deepStairs, wantStairs);
 
         helper.assertTrue(deepslate > stone,
-                "the whole ratio rests on deepslate outranking stone at the raw rock,"
+                "the whole family rests on deepslate outranking stone at the raw rock,"
                         + " and it does not: stone " + stone + ", deepslate " + deepslate);
+        helper.assertTrue(CUT_NUM * stone >= CUT_DEN * deepslate,
+                "the cut family must not be meaner than the rock it is cut from, but"
+                        + " cut ratio " + CUT_NUM + "/" + CUT_DEN + " now sits under"
+                        + " rock ratio " + deepslate + "/" + stone + " - cutting"
+                        + " deepslate into a shape would cost it the advantage it"
+                        + " already has as raw stone");
         helper.assertTrue(deepBricks > stoneBricks,
                 "deepslate bricks must outrank stone bricks: stone " + stoneBricks
                         + ", deepslate " + deepBricks + " (0.7.10 had this backwards"
@@ -2223,13 +2254,13 @@ public final class SIGameTests {
                         + stoneStairs + ", deepslate " + deepStairs + " (0.7.10 gave"
                         + " both 20 from the flat #minecraft:stairs entry)");
         helper.assertValueEqual(deepBricks, wantBricks,
-                "deepslate bricks are stone bricks scaled by the rock ratio - if this"
-                        + " reads 37 the row did not load and the hardness curve"
-                        + " answered instead");
+                "deepslate bricks are stone bricks scaled by the cut ratio " + CUT_NUM
+                        + "/" + CUT_DEN + " - if this reads 37 the row did not load"
+                        + " and the hardness curve answered instead");
         helper.assertValueEqual(deepStairs, wantStairs,
-                "deepslate brick stairs are stone brick stairs scaled by the rock"
-                        + " ratio, rounded half up - if this reads 20 the row did not"
-                        + " load and flat #minecraft:stairs answered instead");
+                "deepslate brick stairs are stone brick stairs scaled by the cut ratio "
+                        + CUT_NUM + "/" + CUT_DEN + " - if this reads 20 the row did"
+                        + " not load and flat #minecraft:stairs answered instead");
 
         helper.succeed();
     }
