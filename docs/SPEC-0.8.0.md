@@ -1,8 +1,16 @@
 # 0.8.0 — disconnect by default
 
 Status: **draft, not implemented.** Written before code, revised under review, and
-expected to ship as 1.0.0 once it has been through oversight. Nothing in 0.8.0
-starts until this document is agreed.
+expected to ship from `main` as 1.1.0 once it has been through oversight. Nothing
+in 0.8.0 starts until this document is agreed.
+
+Release numbering: `gamma` and `main` no longer share a version line. `gamma` keeps
+the 0.7.x / 0.8.x development numbering this document is written in, and `main`
+carries its own user-facing line, where a gamma minor becomes a main minor and a
+run of gamma patches collapses into a single main patch. The first promotion,
+0.7.2, is taken as main 1.0.0 after the fact and left unamended; 0.7.10 shipped
+as main 1.0.1; and this rewrite is main 1.1.0. An earlier draft of the line above
+said 1.0.0, written before the two lines were separated.
 
 Baseline: 0.7.7-gamma (`4f73d91`).
 
