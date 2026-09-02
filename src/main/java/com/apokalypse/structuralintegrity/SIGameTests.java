@@ -2151,4 +2151,86 @@ public final class SIGameTests {
 
         helper.succeed();
     }
+
+    // ---- 0.7.11: deepslate outranks stone, cut or uncut ----------------------
+    /**
+     * Deepslate is the sounder rock and the datamap has always said so - 36 against
+     * stone's 32. Cut either one into bricks, though, and the order flipped. Cut
+     * them into stairs and the distinction vanished outright.
+     *
+     * Neither was a decision. Both were accidents of HOW a value gets found. Stone
+     * bricks carry a hand-written row at 40, while deepslate bricks carried no row
+     * at all, so naturalOf fell through to the hardness curve - defaultIntegrity *
+     * sqrt(hardness / 1.5) - which at the live default of 24 lands on 37. That is
+     * above the 24 stone bricks would have derived and below the 40 they were
+     * lifted to, so the hand-written uplift on one side quietly overtook the real
+     * hardness advantage on the other. The stairs were worse still: #minecraft:
+     * stairs is a single flat 20 for every stair in the game, so deepslate brick
+     * stairs and stone brick stairs were literally the same block.
+     *
+     * 0.7.11 gives deepslate the two rows it was missing. The numbers are not
+     * picked, they are the ratio the file already commits to at the raw rock, and
+     * that is exactly what this asserts - each deepslate row must be its stone
+     * counterpart scaled by deepslate/stone. Written that way the test has an
+     * opinion about the future: move stone or move deepslate and it names the rows
+     * that have to move with them, instead of mismatching a constant nobody can
+     * trace back to a reason.
+     *
+     * The bricks land on the ratio exactly, 40 * 36/32 = 45. The stairs cannot,
+     * because 20 * 1.125 is 22.5, so they round the way naturalOf's own derivation
+     * rounds - half up, to 23.
+     *
+     * Nothing is placed. naturalOf answers from the block state, and asking it
+     * directly is the whole point: this is a test about the DATA, so a fixture that
+     * built a structure first would be able to fail for reasons that have nothing
+     * to do with which row won.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void deepslateOutranksStoneInBricksAndStairs(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        BlockPos probe = helper.absolutePos(BlockPos.ZERO);
+
+        int stone = Integrity.naturalOf(level, probe, Blocks.STONE.defaultBlockState());
+        int deepslate = Integrity.naturalOf(level, probe, Blocks.DEEPSLATE.defaultBlockState());
+        int stoneBricks = Integrity.naturalOf(level, probe, Blocks.STONE_BRICKS.defaultBlockState());
+        int deepBricks = Integrity.naturalOf(level, probe, Blocks.DEEPSLATE_BRICKS.defaultBlockState());
+        int stoneStairs = Integrity.naturalOf(level, probe, Blocks.STONE_BRICK_STAIRS.defaultBlockState());
+        int deepStairs = Integrity.naturalOf(level, probe, Blocks.DEEPSLATE_BRICK_STAIRS.defaultBlockState());
+
+        // The one formula, applied to both rows. Stone's value times the rock ratio.
+        int wantBricks = Math.round(stoneBricks * (float) deepslate / stone);
+        int wantStairs = Math.round(stoneStairs * (float) deepslate / stone);
+
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] DEEPSLATE RANK rock {}/{} = {} | bricks stone={} deepslate={}"
+                        + " (want {}) | stairs stone={} deepslate={} (want {})"
+                        + " | 0.7.10 gave bricks 37, under stone's 40, and stairs 20,"
+                        + " tied with stone's 20",
+                deepslate, stone, (float) deepslate / stone,
+                stoneBricks, deepBricks, wantBricks,
+                stoneStairs, deepStairs, wantStairs);
+
+        helper.assertTrue(deepslate > stone,
+                "the whole ratio rests on deepslate outranking stone at the raw rock,"
+                        + " and it does not: stone " + stone + ", deepslate " + deepslate);
+        helper.assertTrue(deepBricks > stoneBricks,
+                "deepslate bricks must outrank stone bricks: stone " + stoneBricks
+                        + ", deepslate " + deepBricks + " (0.7.10 had this backwards"
+                        + " at 40 against 37, because deepslate bricks had no row and"
+                        + " fell through to the hardness curve)");
+        helper.assertTrue(deepStairs > stoneStairs,
+                "deepslate brick stairs must outrank stone brick stairs: stone "
+                        + stoneStairs + ", deepslate " + deepStairs + " (0.7.10 gave"
+                        + " both 20 from the flat #minecraft:stairs entry)");
+        helper.assertValueEqual(deepBricks, wantBricks,
+                "deepslate bricks are stone bricks scaled by the rock ratio - if this"
+                        + " reads 37 the row did not load and the hardness curve"
+                        + " answered instead");
+        helper.assertValueEqual(deepStairs, wantStairs,
+                "deepslate brick stairs are stone brick stairs scaled by the rock"
+                        + " ratio, rounded half up - if this reads 20 the row did not"
+                        + " load and flat #minecraft:stairs answered instead");
+
+        helper.succeed();
+    }
 }
