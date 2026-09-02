@@ -85,12 +85,14 @@ public final class Integrity {
      *
      * @param support   the neighbour the block was built on, or null if it had none
      * @param supportAt that neighbour's integrity before the placement charged it
+     * @param sideHost  the natural rating the side cap was taken from when the winning
+     *                  connection came in through a horizontal face, 0 otherwise
      * @param failed    every block the charge pass drove to {@link #FAIL_AT}
      * @param degraded  how many blocks the pass reduced, failed ones included
      */
     public record Placed(
             BlockPos pos, int natural, int assigned,
-            @Nullable BlockPos support, int supportAt,
+            @Nullable BlockPos support, int supportAt, int sideHost,
             boolean onAnchor, List<BlockPos> failed, int degraded, boolean capped,
             String trace
     ) {}
@@ -298,25 +300,50 @@ public final class Integrity {
      * conserved, which is what keeps a place and its later break cancelling
      * exactly, and the relax mirrors it - the sturdier block gains two, the weaker
      * gives one back. If a clamp stops the sturdier block from taking its extra
-     * point, no point moved, so nothing is refunded either. Gated by
-     * {@code strongerMaterialBraces}; with it off, the old behaviour returns and
-     * the crossing applies the delta once and stops there, absorbed. That older
-     * behaviour also stands on the FIRST step of a walk, where the block handing
-     * the load over is the origin - the load itself, never charged by the chain -
-     * so there is nothing to refund and no transfer to make.
+     * point, no point moved, so nothing is refunded either. Unconditional since
+     * 0.7.8: this IS the rule for a rise, not one of two ways a rise could be
+     * scored, so no config turns it off. It does not stand on the FIRST step of a
+     * walk, where the block handing the load over is the origin - the load itself,
+     * never charged by the chain - so there is nothing to refund and no transfer
+     * to make.
      *
-     * Into a WEAKER material the crossing concentrates:
-     * the first block of the new material takes the previous block's whole
-     * remaining deficit (nireg - wbireg, measured after that block's own
-     * application, floored at zero) instead of the plain delta, and the walk then
-     * carries on with the plain delta inside the new material. A pristine block's
-     * deficit after taking -1 is exactly 1, so undamaged chains behave as if the
-     * rule were not there; a worn strong block crushes its full accumulated
-     * damage down into whatever weaker thing carries it. A zero deficit - a
-     * clump-braced block still at or above natural - has nothing to hand down and
-     * ends the walk, traced !ABSORB. Both signs walk the same way; the relax
-     * hands its deficit across as healing, still capped at natural. Equal calibre
-     * passes untouched. Gated by {@code materialBoundaryStops}.
+     * The crossing never interrupts the walk. Past the sturdier block the chain
+     * carries on into whatever holds IT up, every one of those blocks taking the
+     * plain delta as {@code compute()} says. A rise concentrates one point onto the
+     * foundation; it does not terminate at it.
+     *
+     * Into a WEAKER material, since 0.7.8, nothing happens at all: the crossing takes
+     * the plain delta like any other step, and the walk carries on. The rule is
+     * deliberately one-sided - a rise into sturdier material is an event, a fall into
+     * weaker material is not, because a structure built out of weak material, or
+     * standing on it, already runs out and falls on the plain delta alone.
+     *
+     * Both directions still TAG themselves in the trace, {@code !RISE} and
+     * {@code !FALL}, even though only the rise is charged. A crossing that leaves no
+     * mark is a crossing nobody can find in a log afterwards, and finding them is how
+     * the 0.7.7 defect below was diagnosed at all.
+     *
+     * Until 0.7.8 the first block of the weaker material took the previous block's
+     * whole remaining deficit instead of the plain delta, and a zero deficit ended
+     * the walk outright, traced !ABSORB. It was removed because it was a second
+     * penalty for something the ordinary arithmetic already says. Weak materials
+     * have low natural ratings, so a structure built out of them, or standing on
+     * them, runs out and falls on the plain delta alone - no boundary rule needed
+     * to make that happen. What the transfer actually did was charge whatever hung
+     * off a structure the structure's entire accumulated wear, in one step, every
+     * pass: {@code prevDeficit} is a running total measured from the row's entry
+     * value, and charging the weaker block never discharged it, so the same debt was
+     * re-billed on every pass that crossed the joint. In one 0.7.7 session that was
+     * 28 of 36 failures, with single steps as large as 45, and it made an attachment
+     * to a worn structure unsurvivable however sound its own material was.
+     *
+     * The rise had a matching stopper, traced {@code !BOUNDARY}, that ended the walk
+     * on the sturdier block. It only ever fired with {@code strongerMaterialBraces}
+     * off - a braced crossing was already exempt from it - so on a default install it
+     * was unreachable, and where it was reachable it contradicted the rule it was
+     * supposed to serve: it withheld the -2/+0 transfer AND refused to let the load
+     * reach the ground the foundation was standing on. Removed in 0.7.8 along with
+     * the gate that was the only way to reach it.
      *
      * This is a chain and not a flood, and the difference is the whole behaviour. A
      * flood charges every block connected to the support, which means a placement on
@@ -394,8 +421,14 @@ public final class Integrity {
         boolean capped = false;
         int maxLoadPath = SIConfig.maxLoadPath();
         int failAt = SIConfig.failAt();
-        boolean boundaryStops = SIConfig.materialBoundaryStops();
-        boolean bracing = SIConfig.strongerMaterialBraces();
+        // Neither materialBoundaryStops nor strongerMaterialBraces is read here any
+        // more. The brace IS the rule for a material rise rather than one option for
+        // scoring one, so it is not switchable, and with the !BOUNDARY stopper gone
+        // materialBoundaryStops had nothing left to gate. Both keys stay defined in
+        // SIConfig on purpose: a build that stops declaring a key does not leave the
+        // key alone in an existing TOML, it drops it, and the value silently reverts
+        // on the next downgrade. Keeping them declared and unread costs two lines and
+        // makes 0.7.8 -> 0.7.7 a version change instead of a config wipe.
         // The material the delta arrives FROM - the placed or removed block itself
         // on the first step. Every caller runs before removal (BreakEvent and
         // Detonate fire with the blocks still present), so its nireg is readable;
@@ -409,10 +442,10 @@ public final class Integrity {
         // Set when the block above decided, on its own iteration, to hand its point
         // of the loss down to this one because this one is sturdier material.
         boolean bracedIn = false;
-        // The previous block's remaining deficit, for the weaker-material transfer.
-        // -1 until the walk has applied to a block: the origin is the load, not
-        // part of the chain, so its own wear is not inherited on the first step.
-        int prevDeficit = -1;
+        // 0.7.8 removed prevDeficit and the weaker-material transfer it fed. Nothing
+        // in the walk now carries state from one block to the next except which
+        // material was handed FROM and the two one-point transfer flags above, so a
+        // step's cost no longer depends on how worn the rest of the chain is.
 
         while (cur != null) {
             if (count >= maxLoadPath) {
@@ -430,20 +463,16 @@ public final class Integrity {
             }
 
             int natural = naturalOf(level, cur, level.getBlockState(cur));
-            boolean stronger = prevNatural > 0 && natural > prevNatural;
-            // Whether this crossing was braced is not asked here - the block above
-            // settled it on its own iteration, looking down, and left the answer in
-            // bracedIn. A braced crossing is not a boundary that stops the walk: the
-            // load carries on into the sturdier material, which is the whole point of
-            // bracing. An unbraced rise still absorbs and stops.
-            boolean rising = boundaryStops && stronger && !bracedIn;
-            boolean falling = boundaryStops && prevNatural > 0 && natural < prevNatural
-                    && prevDeficit >= 0;
-            if (falling && prevDeficit == 0) {
-                // The strong material above carries no wear - nothing crosses.
-                trace.append("!ABSORB");
-                break;
-            }
+            // Which way the material changed on the way in. Neither flag decides
+            // anything: a rise is scored by the brace, which the block ABOVE settled
+            // on its own iteration looking down and left in bracedIn, and a fall is
+            // not scored at all. They exist to be reported. A crossing that leaves no
+            // mark in the trace is a crossing nobody can find in a log afterwards,
+            // and the 0.7.7 attachment defect was only diagnosable because every
+            // crossing tagged itself - so both keep tagging themselves now that
+            // neither carries a penalty of its own.
+            boolean rising = prevNatural > 0 && natural > prevNatural;
+            boolean falling = prevNatural > 0 && natural < prevNatural;
             // Where the load leaves this block, worked out BEFORE the charge is,
             // because a sideways link costs one of its two blocks double. Safe to
             // ask this early: cur is already in visited, and nothing between here
@@ -460,7 +489,7 @@ public final class Integrity {
             // down. Deciding first, the weaker block simply is not charged, so there is
             // no half of a transfer left for a clamp to eat and the relax mirrors the
             // charge by construction instead of by a guard enumerating clamp cases.
-            boolean bracesDown = bracing && next != null && nextNatural > natural;
+            boolean bracesDown = next != null && nextNatural > natural;
             boolean owes = owedSideways;
             boolean owedNext = false;
             if (next != null && next.getY() == cur.getY()) {
@@ -477,10 +506,9 @@ public final class Integrity {
                 }
             }
 
-            // The interface block takes the strong side's whole deficit; every
-            // other step takes the plain delta. A dry walk takes nothing - it is
+            // Every step takes the plain delta. A dry walk takes nothing - it is
             // here to find out WHERE the load goes, not to move it.
-            int applied = dry ? 0 : falling ? (delta < 0 ? -prevDeficit : prevDeficit) : delta;
+            int applied = dry ? 0 : delta;
             if (!dry && owes && (delta < 0 || SIConfig.sidewaysMultiplierOnRestore())) {
                 applied = scaleSideways(applied);
             }
@@ -522,9 +550,6 @@ public final class Integrity {
             }
             trace.append(cur.getX()).append(',').append(cur.getY()).append(',')
                     .append(cur.getZ()).append('=').append(now);
-            if (falling) {
-                trace.append("(x").append(applied).append(')');
-            }
             if (owes) {
                 trace.append("(side").append(applied).append(')');
             }
@@ -534,6 +559,15 @@ public final class Integrity {
                 // naming a row that was edited twice in one pass.
                 trace.append(bracedIn ? "(braced-in " : "(braces-down ")
                         .append(carried).append(')');
+            }
+            // The material change itself, named after the value it produced so the
+            // two can be read against each other. !RISE is expected to sit next to a
+            // (braced-in) tag and show a block two down rather than one; !FALL is
+            // expected to look exactly like an ordinary step, and if it ever does not,
+            // something has started charging the fall again.
+            if (rising || falling) {
+                trace.append(rising ? "!RISE(" : "!FALL(").append(prevNatural)
+                        .append('/').append(natural).append(')');
             }
 
             if (delta < 0 && now <= failAt) {
@@ -547,19 +581,6 @@ public final class Integrity {
                 }
                 break;
             }
-            if (rising) {
-                // Sturdier material: this first block took the delta, nothing
-                // travels past it.
-                trace.append("!BOUNDARY");
-                break;
-            }
-
-            // Deficit is measured against the value this row ENTERED tracking with,
-            // not its material's natural - a fence that entered support-limited at 7
-            // and wore to 6 hands down 1, not natural-minus-stored. Legacy rows with
-            // no recorded entry fall back to natural (the old behaviour).
-            int entry = reg.entryOf(cur);
-            prevDeficit = Math.max(0, (entry >= 0 ? Math.min(entry, natural) : natural) - now);
             owedSideways = owedNext;
             bracedIn = bracesDown;
             prevNatural = natural;
@@ -691,12 +712,20 @@ public final class Integrity {
      * sitting on top of its support.
      *
      * A side joint is the weaker joint, so the block arrives holding a fraction of
-     * its own natural - {@link SIConfig#sideInheritanceFactor}, half by default. The
-     * cap is deliberately on the block's OWN material and not on the value it
-     * inherits: halving the inherited value would halve again at every block further
-     * out, and a shelf would decay exponentially instead of simply being weaker.
-     * Every block out along a ledge is half strength; it is not half of the one
-     * before it.
+     * {@link SIConfig#sideInheritanceFactor} - half by default - of the natural
+     * rating of the material it was stuck TO. The joint is a property of what is
+     * being joined to, not of what is being hung on it: a shelf bolted to deepslate
+     * is a better shelf than the same shelf bolted to planks, and before 0.7.8 the
+     * host had no say at all, because the fraction was taken of the placed block's
+     * own rating and the host only ever entered as a separate {@code min} against
+     * its stored value.
+     *
+     * Taking the fraction from the host does not make a ledge decay exponentially,
+     * which is the trap the own-material form existed to avoid. Natural integrity is
+     * a constant per material, not a running value, so every block out along a
+     * uniform ledge is capped at the same half of that one material's rating - the
+     * same number the old form produced. Halving the INHERITED value, which is what
+     * would compound, is still not what happens here.
      *
      * Halving alone never destroys a block. A material that would have stood at 1
      * still stands at 1 - cracked, but not arriving already spent.
@@ -711,6 +740,31 @@ public final class Integrity {
             return natural;
         }
         return Math.max(failAt + 1, (int) Math.floor(natural * f));
+    }
+
+    /**
+     * How much of a neighbour's strength may travel through the face it is reached
+     * through, expressed as a ceiling on the placed block's assigned value.
+     *
+     * The one definition of that question, asked by both {@link #place} and
+     * {@link #recompute}. They differ in how they find the neighbour - place scans
+     * all six faces for the strongest, recompute asks {@link #supportOf} for the one
+     * that carries the load - but what a face is worth once found is the same
+     * question with the same answer, and it is not worth two copies free to drift.
+     *
+     * Through a vertical face the block inherits up to its own natural: sitting on
+     * something is the sound joint, and the only ceiling is the material itself.
+     * Through a horizontal face the ceiling is {@link #sideInheritanceCap} of the
+     * HOST's natural rating, and then still its own natural, because no joint
+     * however good makes a block sounder than the stuff it is made of.
+     */
+    private static int faceCap(ServerLevel level, BlockPos neighbour,
+                               int ownNatural, boolean horizontal) {
+        if (!horizontal) {
+            return ownNatural;
+        }
+        int hostNatural = naturalOf(level, neighbour, level.getBlockState(neighbour));
+        return Math.min(ownNatural, sideInheritanceCap(hostNatural));
     }
 
     /**
@@ -795,8 +849,9 @@ public final class Integrity {
      * </pre>
      *
      * The new block does not arrive weaker than what it stands on - it arrives equal
-     * to it, capped at its own natural, because a block is only ever as sound as its
-     * footing. What the placement costs is paid underneath, by {@link #chain}.
+     * to it, capped by {@link #faceCap} for the face it came in through, because a
+     * block is only ever as sound as its footing and as the joint to it. What the
+     * placement costs is paid underneath, by {@link #chain}.
      *
      * This is the reverse of the obvious reading, and it is the physical one: weight
      * travels down. The block at the bottom of a pillar is charged once for every
@@ -824,7 +879,7 @@ public final class Integrity {
         if (support == null) {
             // Placed touching nothing structural. It supports itself and no more.
             reg.setEntry(pos, 0);
-            return new Placed(pos.immutable(), natural, 0, null, 0, false, List.of(), 0, false, "");
+            return new Placed(pos.immutable(), natural, 0, null, 0, 0, false, List.of(), 0, false, "");
         }
 
         // The value comes from the strongest connection, not blindly from below -
@@ -833,7 +888,12 @@ public final class Integrity {
         // gravity; where strength is inherited from is a separate question.
         boolean founded = false;
         int best = Integer.MIN_VALUE;
-        int sideCap = sideInheritanceCap(natural);
+        // The host material the WINNING face's cap was derived from, or 0 when that
+        // face was vertical, or nothing won. Carried out to the report so the line
+        // shows the rating the cap came from and not only the cap's effect - the
+        // whole point of 0.7.8 is which block that number is read off, and a report
+        // that shows the result alone cannot tell the two rules apart.
+        int sideHost = 0;
         for (Direction dir : DIRS) {
             BlockPos n = pos.relative(dir).immutable();
             if (!isStructural(level, n, null)) {
@@ -846,12 +906,15 @@ public final class Integrity {
             }
             // Seated on top of its support a block arrives as sound as that support,
             // capped at its own natural. Stuck to the SIDE of one it arrives capped
-            // at a fraction of its natural instead: it is the joint that is weaker,
-            // not the neighbour, so the cap is the same however strong the wall is.
-            int cap = dir.getAxis().isHorizontal() ? sideCap : natural;
+            // at a fraction of THAT NEIGHBOUR's rating instead - a joint is only as
+            // good as the material it was made against - and at its own natural too,
+            // because a good joint does not make a block sounder than its material.
+            boolean horizontal = dir.getAxis().isHorizontal();
+            int cap = faceCap(level, n, natural, horizontal);
             int candidate = Math.min(cap, at);
             if (candidate > best) {
                 best = candidate;
+                sideHost = horizontal ? naturalOf(level, n, level.getBlockState(n)) : 0;
             }
         }
 
@@ -865,7 +928,7 @@ public final class Integrity {
             int assigned = initialValue(level, pos, natural, true);
             reg.setEntry(pos, assigned);
             return new Placed(pos.immutable(), natural, assigned,
-                    support.immutable(), WbiReg.ANCHOR, true, List.of(), 0, false, "");
+                    support.immutable(), WbiReg.ANCHOR, 0, true, List.of(), 0, false, "");
         }
 
         // Inherit the best footing, then charge the structure the load rests on.
@@ -877,7 +940,8 @@ public final class Integrity {
         reg.setEntry(pos, assigned);
         Chained d = chain(level, reg, support, pos, null, -1);
         return new Placed(pos.immutable(), natural, assigned,
-                support.immutable(), best, false, d.failed(), d.count(), d.capped(), d.trace());
+                support.immutable(), best, sideHost,
+                false, d.failed(), d.count(), d.capped(), d.trace());
     }
 
     /**
@@ -913,8 +977,9 @@ public final class Integrity {
      * {@link #place} and {@link #chain} ask - for the one neighbour that is holding
      * this block up. A support reading {@link WbiReg#ANCHOR} is ground and settles
      * it outright at full natural; any other support hands over what it currently
-     * holds, capped at {@code natural} when it is reached through a vertical face
-     * and at {@link #sideInheritanceCap} through a horizontal one; and no support at
+     * holds, capped by {@link #faceCap} - at {@code natural} when it is reached
+     * through a vertical face, and at {@link #sideInheritanceCap} of the SUPPORT's
+     * own rating through a horizontal one; and no support at
      * all hands over nothing. Then the row moves to the better of what it holds and
      * what that says - never down, because a repair that could damage is not a
      * repair, and a block standing stronger than its support warrants has earned
@@ -979,10 +1044,10 @@ public final class Integrity {
                 // Which face the support was reached through still decides the cap.
                 // supportOf answers WHICH neighbour carries the load; this answers
                 // how much of its strength travels through that particular face, and
-                // those are separate questions with separate answers.
-                int cap = support.getY() == pos.getY()
-                        ? sideInheritanceCap(natural)
-                        : natural;
+                // those are separate questions with separate answers. Asked through
+                // faceCap, the same routine place() asks, so the side rule cannot
+                // mean one thing on placement and another on repair.
+                int cap = faceCap(level, support, natural, support.getY() == pos.getY());
                 best = Math.min(cap, at);
             }
         }

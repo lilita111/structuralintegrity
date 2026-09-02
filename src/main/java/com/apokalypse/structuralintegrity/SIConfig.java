@@ -328,29 +328,42 @@ public final class SIConfig {
                     () -> "", SIConfig::isBlockId);
 
     private static final ModConfigSpec.BooleanValue MATERIAL_BOUNDARY_STOPS = B
-            .comment("true: material crossings shape the chain. Into a sturdier material the",
-                    "delta lands once on the first block and stops there, absorbed. Into a",
-                    "weaker material the first block takes the previous block's whole",
-                    "remaining deficit (entry value - wbireg) instead of the plain delta; zero",
-                    "deficit means nothing crosses and the walk stops. Equal calibre passes",
-                    "untouched. Charge and relax walk the same way.")
+            .comment("NO LONGER READ as of 0.7.8. Kept declared so upgrading does not drop the",
+                    "key from an existing config file; setting it has no effect either way.",
+                    "It used to gate two penalties at a material change, and both are gone.",
+                    "Crossing INTO a weaker material took the previous block's whole accumulated",
+                    "wear in a single step. Because that wear was a running total that charging",
+                    "never discharged, the same debt was re-billed on every pass, and anything",
+                    "attached to a worn structure was destroyed however sound its own material",
+                    "was - 28 of 36 failures in one 0.7.7 session, single steps as large as 45.",
+                    "A fall now takes the plain delta like any other step. The rule is one-sided",
+                    "on purpose: weak materials have low natural ratings, so a structure built",
+                    "out of them or standing on them already runs out and falls on the plain",
+                    "delta and needs no extra penalty at the boundary.",
+                    "Crossing INTO a sturdier material stopped the walk on the first block of it,",
+                    "absorbed. That contradicted the rule it was meant to serve - it withheld the",
+                    "brace below AND refused to let the load reach the ground the foundation was",
+                    "standing on - and it was unreachable anyway unless strongerMaterialBraces",
+                    "was off. A rise now braces and CONTINUES; see strongerMaterialBraces.")
             .define("materialBoundaryStops", true);
 
     private static final ModConfigSpec.BooleanValue STRONGER_MATERIAL_BRACES = B
-            .comment("true: a stronger material braces the weaker one that leans on it. When the",
-                    "chain crosses from a weaker block into a sturdier one, one point of the",
-                    "loss moves off the weaker block onto the sturdier: the weaker block is",
-                    "given its point back (so it ends the pass unchanged) and the sturdier one",
-                    "takes an extra point (so -1 becomes -2). The walk then CONTINUES past the",
-                    "crossing rather than stopping, which is what makes this a brace and not an",
-                    "absorb. Crossing the other way - into a weaker material - is untouched, and",
-                    "so is everything else the pass does.",
+            .comment("NO LONGER READ as of 0.7.8, because the brace stopped being one of two ways",
+                    "to score a material rise and became THE way. Kept declared so upgrading",
+                    "does not drop the key from an existing config file; setting it has no",
+                    "effect either way. What it describes is now unconditional:",
+                    "A stronger material braces the weaker one that leans on it. When the chain",
+                    "crosses from a weaker block into a sturdier one, one point of the loss moves",
+                    "off the weaker block onto the sturdier: the weaker block is given its point",
+                    "back (so it ends the pass unchanged) and the sturdier one takes an extra",
+                    "point (so -1 becomes -2). The walk then CONTINUES past the crossing, and",
+                    "every block below it takes the plain delta as usual - a rise concentrates a",
+                    "point onto the foundation, it does not terminate at it. Crossing the other",
+                    "way, into a weaker material, is untouched, and so is everything else.",
                     "The pair is conserved, so the two blocks together lose exactly what they",
                     "lost before and a place/break cycle still cancels; a relax mirrors it, the",
                     "sturdier block gaining two and the weaker giving one back. If a clamp stops",
-                    "the sturdier block taking its extra point, nothing is transferred at all.",
-                    "This supersedes the sturdier half of materialBoundaryStops. Turn it off to",
-                    "get the old absorb-and-stop back.")
+                    "the sturdier block taking its extra point, nothing is transferred at all.")
             .define("strongerMaterialBraces", true);
 
     private static final ModConfigSpec.IntValue MAX_LOAD_PATH = B
@@ -381,12 +394,17 @@ public final class SIConfig {
             .define("sidewaysMultiplierOnRestore", true);
 
     private static final ModConfigSpec.DoubleValue SIDE_INHERITANCE_FACTOR = B
-            .comment("What fraction of its own natural integrity a block gets when it is",
-                    "placed against the SIDE of its support instead of on top of it. The",
-                    "cap is on the placed block's own material, not on the value it",
-                    "inherits, so a ledge is uniformly half-strength rather than halving",
-                    "again at every block out. Ground is exempt - founding on rock is free",
-                    "whichever face touches it. 1.0 disables the rule.")
+            .comment("What fraction of the SUPPORT's natural integrity a block gets when it",
+                    "is placed against the SIDE of that support instead of on top of it. A",
+                    "side joint is only as good as the material it was made against, so a",
+                    "shelf bolted to deepslate is a better shelf than the same shelf bolted",
+                    "to planks. The result is still capped at the placed block's own",
+                    "natural - a good joint does not make a block sounder than its material.",
+                    "The fraction is of the support's NATURAL rating, a per-material",
+                    "constant, not of the value it currently holds, so a ledge is uniformly",
+                    "half-strength rather than halving again at every block out. Ground is",
+                    "exempt - founding on rock is free whichever face touches it. 1.0",
+                    "disables the rule.")
             .defineInRange("sideInheritanceFactor", 0.5, 0.0, 1.0);
 
     // ---- base integrity values --------------------------------------------

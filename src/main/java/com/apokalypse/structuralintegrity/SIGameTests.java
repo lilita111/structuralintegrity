@@ -708,6 +708,144 @@ public final class SIGameTests {
     }
 
     /**
+     * Build the fixture both side-joint tests measure on: a run of ground, a cliff
+     * rising off it, and one block ledged out from the cliff at {@link #LEDGE_Y} to
+     * act as the HOST. Everything untouched is ground and reads as
+     * {@link WbiReg#ANCHOR}, so the host is the first thing in the fixture that
+     * carries a real row.
+     *
+     * The host is placed against the cliff, which is ground, so it founds at full
+     * natural whichever face it touched - that exemption is what makes the host's
+     * stored value equal to its own rating and keeps the guest's assertion about
+     * the CAP rather than about wear the fixture happened to inflict.
+     *
+     * @return the host's assigned value, which must be its full natural
+     */
+    private static int buildSideJointHost(GameTestHelper helper, WbiReg reg, Block host) {
+        ServerLevel level = helper.getLevel();
+        for (int x = FLOOR_MIN; x <= FLOOR_MIN + 4; x++) {
+            helper.setBlock(new BlockPos(x, FLOOR_Y, LEDGE_Z), Blocks.OBSIDIAN);
+        }
+        for (int y = FLOOR_Y + 1; y <= LEDGE_Y + 1; y++) {
+            helper.setBlock(new BlockPos(FLOOR_MIN, y, LEDGE_Z), Blocks.OBSIDIAN);
+        }
+        BlockPos local = new BlockPos(FLOOR_MIN + 1, LEDGE_Y, LEDGE_Z);
+        helper.setBlock(local, host);
+        Integrity.Placed placed = Integrity.place(level, reg, helper.absolutePos(local));
+        helper.assertTrue(placed != null, "side-joint host was not structural");
+        helper.assertTrue(placed.onAnchor(),
+                "side-joint host should have founded on the cliff, so its row is full natural");
+        return placed.assigned();
+    }
+
+    /**
+     * Place the GUEST one further out, so its only connection is a horizontal face
+     * into the host, and report what it was assigned.
+     */
+    private static Integrity.Placed placeSideJointGuest(GameTestHelper helper, WbiReg reg,
+                                                        Block guest) {
+        BlockPos local = new BlockPos(FLOOR_MIN + 2, LEDGE_Y, LEDGE_Z);
+        helper.setBlock(local, guest);
+        Integrity.Placed placed = Integrity.place(helper.getLevel(), reg,
+                helper.absolutePos(local));
+        helper.assertTrue(placed != null, "side-joint guest was not structural");
+        // If this founded it has reached the untouched world past the plot edge and
+        // is measuring ground, not a joint.
+        helper.assertTrue(!placed.onAnchor(),
+                "side-joint guest founded on ground - it has reached outside the plot");
+        return placed;
+    }
+
+    /**
+     * 0.7.8: a side joint is worth half of the HOST's rating, not half of the
+     * guest's own.
+     *
+     * Stone (32) hung on the side of an iron block (80). Half of iron is 40, which
+     * is more than stone's own 32, so the guest's own material is what binds and it
+     * arrives at a full 32.
+     *
+     * Under the rule this replaces the fraction was taken of the guest's own rating,
+     * so the same stone arrived at 16. That number is asserted against directly:
+     * a stone shelf bolted to iron is a better shelf than a stone shelf bolted to
+     * stone, and before 0.7.8 the host had no say in it at all.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void sideJointTakesHalfOfTheHostNotTheGuest(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        int hostStored = buildSideJointHost(helper, reg, Blocks.IRON_BLOCK);
+        Integrity.Placed guest = placeSideJointGuest(helper, reg, Blocks.STONE);
+
+        BlockPos probe = helper.absolutePos(BlockPos.ZERO);
+        int natHost = Integrity.naturalOf(level, probe, Blocks.IRON_BLOCK.defaultBlockState());
+        int natGuest = Integrity.naturalOf(level, probe, Blocks.STONE.defaultBlockState());
+
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] SIDE-JOINT weak-on-strong: host iron nat={} stored={}, "
+                        + "guest stone nat={} assigned={} sideHost={}; "
+                        + "half-of-host={} half-of-guest={} (the pre-0.7.8 answer)",
+                natHost, hostStored, natGuest, guest.assigned(), guest.sideHost(),
+                natHost / 2, natGuest / 2);
+
+        helper.assertTrue(natHost >= 2 * natGuest,
+                "fixture is not measuring anything: iron " + natHost + " must be at least"
+                        + " twice stone " + natGuest + " for the two rules to differ");
+        helper.assertTrue(guest.sideHost() == natHost,
+                "the report must name the HOST's rating: expected " + natHost
+                        + ", got " + guest.sideHost());
+        helper.assertTrue(guest.assigned() == natGuest,
+                "half of iron (" + (natHost / 2) + ") exceeds stone's own " + natGuest
+                        + ", so stone binds and arrives full: expected " + natGuest
+                        + ", got " + guest.assigned());
+        helper.assertTrue(guest.assigned() > natGuest / 2,
+                "the pre-0.7.8 rule halved the GUEST and would have given "
+                        + (natGuest / 2) + "; got " + guest.assigned());
+        helper.succeed();
+    }
+
+    /**
+     * The other direction, and the one that costs the player something: iron (80)
+     * hung on the side of stone (32) arrives at 16, half of the STONE.
+     *
+     * A joint is only as good as the material it was made against, so bolting a
+     * strong block to a weak wall does not import the strong block's rating. Under
+     * the rule this replaces the guest was capped at half of ITS own 80, or 40, and
+     * then clipped to the host's stored 32 - so it arrived at 32, twice what it now
+     * gets, and the wall it hung on made no difference to the joint.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void sideJointToAWeakHostLimitsAStrongGuest(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        int hostStored = buildSideJointHost(helper, reg, Blocks.STONE);
+        Integrity.Placed guest = placeSideJointGuest(helper, reg, Blocks.IRON_BLOCK);
+
+        BlockPos probe = helper.absolutePos(BlockPos.ZERO);
+        int natHost = Integrity.naturalOf(level, probe, Blocks.STONE.defaultBlockState());
+        int natGuest = Integrity.naturalOf(level, probe, Blocks.IRON_BLOCK.defaultBlockState());
+
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] SIDE-JOINT strong-on-weak: host stone nat={} stored={}, "
+                        + "guest iron nat={} assigned={} sideHost={}; "
+                        + "half-of-host={} host-stored={} (the pre-0.7.8 answer)",
+                natHost, hostStored, natGuest, guest.assigned(), guest.sideHost(),
+                natHost / 2, hostStored);
+
+        helper.assertTrue(guest.sideHost() == natHost,
+                "the report must name the HOST's rating: expected " + natHost
+                        + ", got " + guest.sideHost());
+        helper.assertTrue(guest.assigned() == natHost / 2,
+                "a strong block on a weak wall takes half the WALL: expected "
+                        + (natHost / 2) + ", got " + guest.assigned());
+        helper.assertTrue(guest.assigned() < hostStored,
+                "the pre-0.7.8 rule clipped to the host's stored " + hostStored
+                        + " and never halved it; got " + guest.assigned());
+        helper.succeed();
+    }
+
+    /**
      * A spent block stands, and stops carrying.
      *
      * This is the whole of the holding branch, which became the default in 0.6.6
@@ -1488,6 +1626,118 @@ public final class SIGameTests {
                         + "place/break no longer cancels and every cycle grinds the foundation");
         helper.assertValueEqual(reg.get(lower), lowerBefore,
                 "a relax did not leave the plank where it started");
+
+        helper.succeed();
+    }
+
+    /**
+     * A material rise concentrates a point onto the foundation; it does not stop
+     * there. Everything below the crossing still takes its ordinary -1.
+     *
+     * Up to 0.7.7 a rise into sturdier material could end the walk outright, traced
+     * {@code !BOUNDARY}. It was unreachable on a default install - a braced crossing
+     * was exempt and bracing was on by default - but where it was reachable it did
+     * two contradictory things at once: it withheld the brace AND refused to let the
+     * load travel down to the ground the foundation was standing on, so a foundation
+     * behaved like a wall the load could not get past. 0.7.8 removed the stopper and
+     * made the brace unconditional, and this test is what says so.
+     *
+     * The structure is three tracked courses on untracked ground: cobble, then stone,
+     * then cobble, with a fourth cobble on top to be the origin. Walking down from
+     * the upper cobble the chain crosses UP into stone on its second step and back
+     * DOWN into cobble on its third, so one pass exercises both directions of a
+     * material change and the ground below is the same calibre as the block resting
+     * on it, which keeps a second brace from firing against the anchor and muddying
+     * the arithmetic.
+     *
+     * The third assertion is the one that carries the change. The first two would
+     * also pass on 0.7.7 with bracing left on - the brace itself is unaltered - so a
+     * test that stopped at the crossing would report success against both versions
+     * and prove nothing. The bottom cobble is BELOW the crossing, and it only moves
+     * at all if the walk continued past the stone.
+     */
+    @GameTest(template = "empty", timeoutTicks = 100)
+    public static void aMaterialRiseDoesNotInterruptTheChain(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        WbiReg reg = WbiReg.of(level);
+
+        // Untracked cobble ground reads as ANCHOR, and matching the course above it
+        // means that course has nothing sturdier to brace into - the only crossings
+        // in this walk are the two being measured.
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y, PILLAR_Z), Blocks.COBBLESTONE);
+
+        BlockPos bottom = helper.absolutePos(new BlockPos(PILLAR_X, FLOOR_Y + 1, PILLAR_Z));
+        BlockPos strong = helper.absolutePos(new BlockPos(PILLAR_X, FLOOR_Y + 2, PILLAR_Z));
+        BlockPos weak = helper.absolutePos(new BlockPos(PILLAR_X, FLOOR_Y + 3, PILLAR_Z));
+        BlockPos origin = helper.absolutePos(new BlockPos(PILLAR_X, FLOOR_Y + 4, PILLAR_Z));
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y + 1, PILLAR_Z), Blocks.COBBLESTONE);
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y + 2, PILLAR_Z), Blocks.STONE);
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y + 3, PILLAR_Z), Blocks.COBBLESTONE);
+        helper.setBlock(new BlockPos(PILLAR_X, FLOOR_Y + 4, PILLAR_Z), Blocks.COBBLESTONE);
+        Integrity.place(level, reg, bottom);
+        Integrity.place(level, reg, strong);
+        Integrity.place(level, reg, weak);
+        Integrity.place(level, reg, origin);
+
+        int cobbleNatural = Integrity.naturalOf(level, weak, level.getBlockState(weak));
+        int stoneNatural = Integrity.naturalOf(level, strong, level.getBlockState(strong));
+        helper.assertTrue(stoneNatural > cobbleNatural,
+                "the test needs stone to outrank cobblestone - natural_integrity.json changed");
+
+        int weakBefore = reg.get(weak);
+        int strongBefore = reg.get(strong);
+        int bottomBefore = reg.get(bottom);
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] RISE built: cobble natural={} stone natural={} rows weak={} strong={} bottom={}",
+                cobbleNatural, stoneNatural, weakBefore, strongBefore, bottomBefore);
+
+        Integrity.Chained charged = Integrity.chain(level, reg, weak, origin, null, -1);
+        int weakCharged = reg.get(weak);
+        int strongCharged = reg.get(strong);
+        int bottomCharged = reg.get(bottom);
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] RISE charged: weak {}->{} strong {}->{} bottom {}->{} count={} trace {}",
+                weakBefore, weakCharged, strongBefore, strongCharged,
+                bottomBefore, bottomCharged, charged.count(), charged.trace());
+
+        helper.assertValueEqual(weakCharged, weakBefore,
+                "the cobble handing the load into stone should end the pass unchanged");
+        helper.assertValueEqual(strongCharged, strongBefore - 2,
+                "the stone braced into should take two points, not one");
+        helper.assertValueEqual(bottomCharged, bottomBefore - 1,
+                "the block BELOW the crossing took nothing - the rise stopped the walk, "
+                        + "which is exactly what 0.7.8 removed");
+        helper.assertValueEqual(
+                (weakCharged - weakBefore) + (strongCharged - strongBefore)
+                        + (bottomCharged - bottomBefore), -3,
+                "three blocks were walked, so three points should have been spent - "
+                        + "the brace moves a point, it does not create or destroy one");
+        helper.assertValueEqual(charged.count(), 3,
+                "the walk should have charged all three tracked courses");
+
+        // Both crossings have to be legible in the trace. Diagnosing the 0.7.7
+        // attachment defect from a live log was only possible because every material
+        // change tagged itself, and a silent crossing costs that outright.
+        helper.assertTrue(charged.trace().contains("!RISE"),
+                "the crossing into stone left no !RISE tag: " + charged.trace());
+        helper.assertTrue(charged.trace().contains("!FALL"),
+                "the crossing back into cobble left no !FALL tag: " + charged.trace());
+
+        // The same walk with the sign flipped - what a break of the origin runs.
+        // All three rows must land back where they started, or a build/unbuild cycle
+        // grinds the structure down and the fall is silently charging something.
+        Integrity.Chained relaxed = Integrity.chain(level, reg, weak, origin, null, 1);
+        StructuralIntegrity.LOGGER.info(
+                "[SI-TEST] RISE relaxed: weak {}->{} strong {}->{} bottom {}->{} trace {}",
+                weakCharged, reg.get(weak), strongCharged, reg.get(strong),
+                bottomCharged, reg.get(bottom), relaxed.trace());
+
+        helper.assertValueEqual(reg.get(weak), weakBefore,
+                "a relax did not leave the cobble above the crossing where it started");
+        helper.assertValueEqual(reg.get(strong), strongBefore,
+                "a relax did not give the stone back what the charge took");
+        helper.assertValueEqual(reg.get(bottom), bottomBefore,
+                "a relax did not give the block below the crossing back what the charge took");
 
         helper.succeed();
     }

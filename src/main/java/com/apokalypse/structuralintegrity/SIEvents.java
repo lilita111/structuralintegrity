@@ -325,6 +325,15 @@ public final class SIEvents {
         } else {
             sb.append(" on ").append(fmt(p.support()))
                     .append(" (support=").append(p.supportAt()).append(')');
+            // Which block the side cap was read off, printed only when a horizontal
+            // face won. Since 0.7.8 the fraction is taken of the HOST's rating, and
+            // that is invisible in the assigned value alone - two rules that differ
+            // only in which block they measure produce the same number on a uniform
+            // wall and different numbers at a material change, so the line has to
+            // name the rating or the change cannot be read back out of the log.
+            if (p.sideHost() > 0) {
+                sb.append(" (side-joint to nat=").append(p.sideHost()).append(')');
+            }
         }
         if (p.degraded() > 0) {
             sb.append(" load[").append(p.degraded()).append("] ").append(p.trace());

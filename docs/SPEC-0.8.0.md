@@ -151,15 +151,29 @@ in this tag breaks regardless of the comparison. Glass, ice and leaves have no
 sensible "detaches and topples as a body" reading, and an exception list is the
 honest way to say so — one lever, with the exceptions in data rather than in code.
 
-**`materialBoundaryStops` stays, but loses all say in the outcome.** Today
-`boundaryStops` gates `rising`, `falling` and `!ABSORB`, which decide *where the
-walk stops*, and the break decision is entangled with them through the same flag.
-Those are two different questions. 0.8.0 keeps the walk-stopping behaviour exactly
-as it is and severs it from break-vs-disconnect.
+**`materialBoundaryStops` is already spent — 0.7.8 got there first.** This section
+used to say the key would stay but lose its say in the outcome, on the grounds that
+*where the walk stops* and *break-vs-disconnect* are two different questions
+entangled through one flag. 0.7.8 settled it more simply: a material crossing no
+longer stops the walk at all, in either direction, so there is nothing left for the
+flag to gate. The key is still declared, so that upgrading does not drop it out of
+an existing config file, and is no longer read. 0.8.0 inherits a walk that always
+runs to ground or to a snap, which is a cleaner starting point for the
+break-vs-disconnect rewrite than the one this section was written against.
 
-**`prevDeficit`, the sideways doubling, the brace, the clump grant and the hold
-band's transfer arithmetic all stay untouched.** They govern how much load moves
-and where it goes. None of them gets a vote on what happens when it runs out.
+**`prevDeficit` is gone, and the rest — the sideways doubling, the brace, the clump
+grant and the hold band's transfer arithmetic — stays untouched.** 0.7.8 removed
+`prevDeficit` because it was lifetime wear that charging never discharged, so the
+same debt was re-billed on every pass that crossed a material joint; that was 28 of
+36 failures in a live 0.7.7 session. The survivors govern how much load moves and
+where it goes. None of them gets a vote on what happens when it runs out.
+
+**The brace is no longer optional.** `strongerMaterialBraces` is likewise declared
+and unread since 0.7.8. A crossing into sturdier material moves one point off the
+weaker block onto the sturdier one — weaker ends at +0, sturdier at -2 — and the
+walk carries on past it, every block below taking the ordinary -1. That is the rule
+rather than one of two ways to score a rise, so 0.8.0 should not reintroduce a
+switch for it.
 
 **`snap`'s locals get renamed.** `weaker` and `stronger` assert a material
 relationship the code never checks — `spent` is simply whichever block ran out of
