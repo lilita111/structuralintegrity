@@ -161,12 +161,16 @@ an existing config file, and is no longer read. 0.8.0 inherits a walk that alway
 runs to ground or to a snap, which is a cleaner starting point for the
 break-vs-disconnect rewrite than the one this section was written against.
 
-**`prevDeficit` is gone, and the rest — the sideways doubling, the brace, the clump
-grant and the hold band's transfer arithmetic — stays untouched.** 0.7.8 removed
-`prevDeficit` because it was lifetime wear that charging never discharged, so the
-same debt was re-billed on every pass that crossed a material joint; that was 28 of
-36 failures in a live 0.7.7 session. The survivors govern how much load moves and
-where it goes. None of them gets a vote on what happens when it runs out.
+**`prevDeficit` is gone, and the brace, the clump grant and the hold band's
+transfer arithmetic stay untouched.** 0.7.8 removed `prevDeficit` because it was
+lifetime wear that charging never discharged, so the same debt was re-billed on
+every pass that crossed a material joint; that was 28 of 36 failures in a live
+0.7.7 session. The survivors govern how much load moves and where it goes. None of
+them gets a vote on what happens when it runs out.
+
+The one exception is the side joint, which 0.8.0 does change — see §9. It changes
+in the same direction as everything else here, though: what a face passes on, not
+what happens when the receiving block runs out.
 
 **The brace is no longer optional.** `strongerMaterialBraces` is likewise declared
 and unread since 0.7.8. A crossing into sturdier material moves one point off the
@@ -213,6 +217,11 @@ guessed at.
    would wear and break the stronger side even when config said only the weaker side
    gives way. With FROM never affected by the verdict, the shield may be redundant —
    or may still be doing real work via splinter wear specifically.
+5. **Does the `failAt + 1` floor survive the side-joint change of §9?** Reading the
+   half off the host's stored value means a host worn to 1 grants 0, and only the
+   floor makes the attachment live at all. Either a nearly-spent wall can still carry
+   a one-point shelf, or the floor is dropped for the side case and attaching to a
+   spent host fails outright.
 
 ## 8. Relationship to the two smaller specs
 
@@ -230,7 +239,82 @@ the `down != null` return in `supportOf`, delegating to the existing
 the strength vote, which would let load travel upward through a mass — is unrelated
 to anything in this document.
 
-## 9. Test plan
+## 9. Side inheritance measures what the host has left
+
+0.7.8 changed which block the side cap is read off. Before it, placing a block
+against a vertical face gave the new block half of *its own* natural rating, so a
+shelf was worth the same whether it was bolted to deepslate or to planks. After it,
+the cap comes off the block being attached TO, through one `faceCap` helper that
+`place` and `recompute` both ask so the rule cannot mean one thing on placement and
+another on repair.
+
+0.8.0 changes what is measured on that host: not its natural rating, but its stored
+integrity — what it actually has left right now.
+
+Today the assigned value is
+
+```
+min( guest natural, floor(host natural * sideInheritanceFactor), host stored )
+```
+
+and under 0.8.0 it becomes
+
+```
+min( guest natural, floor(host stored * sideInheritanceFactor) )
+```
+
+The host's stored value stops being a separate ceiling applied afterwards and
+becomes the thing the half is taken of. On a fresh, unloaded host the two agree, so
+nothing about a first build changes. They diverge the moment the host has taken any
+load at all: a stone wall worn from 32 down to 10 hands a guest 16 today and 5
+under this spec.
+
+### Why this is the right measure
+
+Natural integrity says what a material is capable of; stored integrity says what
+this particular block still has to give. A side attachment is carried entirely by
+the block it hangs off, so what it can inherit is bounded by what that block
+actually has, not by what a pristine example of the same stone would have had. The
+current rule lets a wall that is one point from failing still hand out half of a
+full stone rating, which is the same category of mistake as the 0.7.7 defects: a
+number derived from the material when it should have been read from the state.
+
+### Two consequences worth having on the record
+
+**Attachments decay outward along a run.** Because natural integrity is a constant
+per material, the current rule does not compound — every block out along a uniform
+ledge is capped at the same half of the same rating. Reading stored value instead
+makes it geometric: the first block off a 32-stored wall takes 16, the next takes
+8, then 4, then 2. A long cantilever thins out to nothing on its own, without a
+distance rule, a length limit or a config key. This is almost certainly desirable
+and is the strongest argument for the change, but it is a real behaviour shift and
+should be seen in a gametest before it is believed.
+
+**Build order starts to matter.** The same shelf on the same wall is worth less if
+you hang it after the wall has taken load than if you hang it first. That follows
+directly from measuring state rather than material and is consistent with the rest
+of the mod, but it is the kind of thing a player notices and calls a bug, so it
+belongs in the changelog rather than only in the code.
+
+### The one sub-question
+
+`sideInheritanceCap` floors its result at `failAt + 1`, so a side block never
+arrives already dead. Against a host worn to 1, half is 0 and the floor is the only
+thing that grants anything at all — a nearly-spent wall would still hand out a live,
+if minimal, attachment. Either that floor stays, and a wall about to fail can still
+carry a shelf worth one point, or the floor is dropped for the side case and
+attaching to a spent host simply fails the placement. This is a design call, not a
+mechanical consequence, and is listed with the §7 questions rather than answered
+here.
+
+There is a second-order version of the same question for `recompute`. Since
+`faceCap` is shared, a repair pass would re-read a host value that moves, so an
+already-placed guest can be lowered as its host wears. That reads as intended given
+the direction of 0.8.0 — structures come apart as they degrade — but it means the
+side joint stops being settled at placement time, which is a change in kind and not
+only in number.
+
+## 10. Test plan
 
 Every item below is a gametest asserting from the program's own printed output, not
 a manual reproduction.
@@ -246,11 +330,26 @@ a manual reproduction.
 - A pillar still behaves exactly as it does in 0.7.7 — this is the regression guard
   that proves the change is confined to the complex case.
 - The dry/real drift probe still agrees, as it does after the 0.7.7 brace rewrite.
+- A guest placed against a host worn to half its natural rating inherits half of the
+  worn value, not half of the rating — the assertion that separates §9 from 0.7.8.
+- A four-block ledge run off a full-strength wall halves at every step outward, and
+  the printed run reads 16, 8, 4, 2 rather than 16, 16, 16, 16.
+- The same guest placed on a fresh host and on a worn host gets different values, so
+  build order is shown to matter rather than assumed to.
+- `recompute` on an already-placed guest re-reads its host and lowers it as the host
+  wears, and a `place` followed by its matching break still cancels exactly.
 
 ---
 
 ## Revision log
 
+- **2026-09-02** — §9 added, from "you missed the tweak where placing blocks on the
+  side gets half the integrity of the block placed on" plus "save this for 0.8.0".
+  0.7.8 had already moved the side cap onto the host, but it reads the host's
+  *natural rating*; this is the same rule re-pointed at the host's *stored* value.
+  §5's promise that the sideways rule stays untouched was amended to match, and the
+  floor question added to §7 as (5). Not implemented — 0.7.8 ships the natural-rating
+  form.
 - **2026-09-02** — first draft, from the 0.8.0 refinement: "structures will fall
   apart (when they are more complex than just pillars) rather than becoming
   disconnected / the TO/FROM logic is strict here regarding whether TO was > or <
