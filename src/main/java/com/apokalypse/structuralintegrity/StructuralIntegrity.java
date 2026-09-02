@@ -34,6 +34,8 @@ public class StructuralIntegrity {
         NeoForge.EVENT_BUS.register(SIEvents.class);
         NeoForge.EVENT_BUS.register(SIFall.class);
         NeoForge.EVENT_BUS.register(SIPlayerImpact.class);
+        NeoForge.EVENT_BUS.register(SIJumpShock.class);
+        NeoForge.EVENT_BUS.register(SIWrench.class);
         LOGGER.info("[SI] integrity = stored; the placement cost lives in stored now, so hang is "
                 + "reported but no longer charged; ground = no wbireg row (max+1)");
         LOGGER.info("[SI] every block has an entry: datamap row first, else derived from hardness "
@@ -60,6 +62,15 @@ public class StructuralIntegrity {
         LOGGER.info("[SI] snap: the chain stops at the first spent block; config picks which side of the snap breaks");
         LOGGER.info("[SI] falling: a component that cannot reach ground is assembled by sable, up to {} blocks",
                 SIFall.MAX_ASSEMBLY);
+        LOGGER.info("[SI] jump shock: landing on a tracked block charges -{} down its support chain, held for {} tick(s) and then handed back exactly",
+                SIConfig.jumpShockLoad(), SIConfig.jumpShockRecoveryTicks());
+        LOGGER.info("[SI] repair: right-clicking a tracked block with {} re-derives it from its "
+                + "neighbours as they stand now and charges nobody; it never lowers a row, and it "
+                + "never re-pays the clump grant, so a damaged wall is mended from the bottom up",
+                SIConfig.wrenchRepairItem());
+        LOGGER.info("[SI] goggles: the Structure row is the last block of the support chain - the "
+                + "footing everything above pays into, which is the block that actually fails; "
+                + "measured by the charge walk itself, run dry");
         LOGGER.info("[SI] reads never write: goggle queries and region floods peek, only the solver's "
                 + "write paths materialise wbireg rows; never_anchor blocks enter tracking at first write");
     }

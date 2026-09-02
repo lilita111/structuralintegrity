@@ -325,6 +325,19 @@ public final class SIEvents {
         } else {
             sb.append(" on ").append(fmt(p.support()))
                     .append(" (support=").append(p.supportAt()).append(')');
+            // Which block the side cap was read off, printed only when a horizontal
+            // face won, and both of its numbers. 0.7.8 moved the fraction onto the
+            // HOST and 0.7.9 moved it from that host's rating onto what the host
+            // still holds; neither move is visible in the assigned value alone,
+            // because all three rules agree on a fresh uniform wall and separate
+            // only once materials differ or the host has worn. So the line names
+            // the rating, which identifies the material, AND the remaining value,
+            // which is what the fraction was actually taken of. Printing one
+            // without the other leaves a log that cannot tell the three apart.
+            if (p.sideHost() > 0) {
+                sb.append(" (side-joint to nat=").append(p.sideHost())
+                        .append(" with ").append(p.sideHostStored()).append(" left)");
+            }
         }
         if (p.degraded() > 0) {
             sb.append(" load[").append(p.degraded()).append("] ").append(p.trace());

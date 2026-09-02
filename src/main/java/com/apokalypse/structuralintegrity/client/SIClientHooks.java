@@ -117,6 +117,25 @@ public final class SIClientHooks {
                 : ChatFormatting.WHITE;
         tooltip.add(line("Integrity", value + " / " + info.natural(), colour));
 
+        // What is actually holding this up. The support chain has no falloff, so
+        // every block above pays into the same footing and the footing is what
+        // fails - a pristine plank reading 20/20 says nothing while the stone
+        // course under it is one point from going. When the block being looked at
+        // IS the footing the two rows agree, which is the honest answer rather
+        // than a row that vanishes depending on where you stand.
+        if (info.hasChain()) {
+            int base = info.chainStored();
+            ChatFormatting baseColour = base <= 0 ? ChatFormatting.RED
+                    : base == 1 ? ChatFormatting.GOLD
+                    : base <= info.chainNatural() / 4 ? ChatFormatting.YELLOW
+                    : ChatFormatting.WHITE;
+            tooltip.add(line("Structure", base + " / " + info.chainNatural(), baseColour)
+                    .append(Component.literal(
+                                    info.chainDepth() == 1 ? " (this block)"
+                                            : " (" + info.chainDepth() + " down)")
+                            .withStyle(ChatFormatting.DARK_GRAY)));
+        }
+
         if (info.hang() > 0) {
             tooltip.add(line("Hanging", info.hang() + " block" + (info.hang() == 1 ? "" : "s"),
                     ChatFormatting.YELLOW));

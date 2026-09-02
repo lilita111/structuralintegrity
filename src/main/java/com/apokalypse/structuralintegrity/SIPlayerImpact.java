@@ -7,6 +7,7 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.entity_collision.SubLevelEntityCollision;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.entity.living.LivingEvent;
 import net.neoforged.neoforge.event.tick.PlayerTickEvent;
@@ -154,8 +155,8 @@ public final class SIPlayerImpact {
      * it, so a world vector handed over raw is only correct on a body that happens to
      * be sitting square.
      */
-    private static void strike(ServerSubLevel subLevel, Vec3 localPoint, Vec3 worldMotion,
-                               String what, Player player, double speed) {
+    static void strike(ServerSubLevel subLevel, Vec3 localPoint, Vec3 worldMotion,
+                       String what, @Nullable Player player, double speed) {
         double weight = SIConfig.playerImpactMass();
         if (!(weight > 0.0)) {
             return;
@@ -167,7 +168,7 @@ public final class SIPlayerImpact {
             return;
         }
 
-        Vec3 localImpulse = subLevel.logicalPose().transformNormalInverse(worldMotion.scale(weight));
+        Vec3 localImpulse = impulseOf(subLevel, worldMotion);
 
         Vec3 vBefore = SIForce.linearVelocityOf(subLevel);
         Vec3 wBefore = SIForce.angularVelocityOf(subLevel);
@@ -178,7 +179,8 @@ public final class SIPlayerImpact {
         StructuralIntegrity.LOGGER.info("[SI] PLAYER {} {} onto sub-level={} mass={} speed={} "
                         + "at local=({},{},{}) impulse=({},{},{}) -> v=({},{},{})->({},{},{}) "
                         + "w=({},{},{})->({},{},{})",
-                what, player.getGameProfile().getName(), System.identityHashCode(subLevel),
+                what, player == null ? "<gametest>" : player.getGameProfile().getName(),
+                System.identityHashCode(subLevel),
                 fmt(subLevel.getMassTracker().getMass()), fmt(speed),
                 fmt(localPoint.x), fmt(localPoint.y), fmt(localPoint.z),
                 fmt(localImpulse.x), fmt(localImpulse.y), fmt(localImpulse.z),
@@ -186,6 +188,27 @@ public final class SIPlayerImpact {
                 fmt(vAfter.x), fmt(vAfter.y), fmt(vAfter.z),
                 fmt(wBefore.x), fmt(wBefore.y), fmt(wBefore.z),
                 fmt(wAfter.x), fmt(wAfter.y), fmt(wAfter.z));
+    }
+
+    /**
+     * The impulse a player's motion delivers to a body, in the body's own frame.
+     *
+     * Pure, and separated out so the one property worth checking can be checked by
+     * a test rather than by reading: the impulse is the player's ACTUAL world
+     * motion - {@code CollisionInfo.preDeltaMovement} for a landing, the launch
+     * velocity for a jump - times {@code playerImpactMass}, which is the player's
+     * weight and is correctly the same for every impact. So a player who fell ten
+     * blocks hits ten blocks' worth harder than one who stepped off a kerb, and
+     * nothing about the impact is a flat constant.
+     *
+     * Rotated into the body's frame for the same reason sable's own arrow mixin
+     * does it: rapier turns an impulse by the body's orientation before applying
+     * it, so a world vector handed over raw is only correct on a body that happens
+     * to be sitting square with the world.
+     */
+    static Vec3 impulseOf(ServerSubLevel subLevel, Vec3 worldMotion) {
+        return subLevel.logicalPose()
+                .transformNormalInverse(worldMotion.scale(SIConfig.playerImpactMass()));
     }
 
     private static Vec3 toVec3(Vector3dc v) {

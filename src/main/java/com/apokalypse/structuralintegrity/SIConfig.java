@@ -250,6 +250,60 @@ public final class SIConfig {
                     "rock a building; a jump lands at roughly 0.5 and should.")
             .defineInRange("playerImpactMinSpeed", 0.15, 0.0, 4.0);
 
+    // ---- the weight of a person on a floor ---------------------------------
+
+    private static final ModConfigSpec.BooleanValue JUMP_SHOCK_ENABLED = B
+            .comment("Whether landing on a structure loads it. A player who jumps onto a tracked",
+                    "block sends a charge down whatever carries it, exactly as if a block had",
+                    "been placed there, and then the charge is handed back a moment later. A",
+                    "sound floor never notices; a floor that was already one point from failing",
+                    "gives way underfoot, which is the whole point of the mechanism. Off, a",
+                    "player weighs nothing to the world and only ever loads it by building.")
+            .define("jumpShockEnabled", true);
+
+    private static final ModConfigSpec.IntValue JUMP_SHOCK_LOAD = B
+            .comment("How many points of integrity a landing spends while the player is standing",
+                    "there. 1 is a person; raising it makes a floor that survives being built",
+                    "fail the moment anyone walks onto it, which is a different game. The charge",
+                    "travels the same support chain a placement does, so a span still pays the",
+                    "sideways doubling and a pillar still pays once per block.")
+            .defineInRange("jumpShockLoad", 1, 0, 64);
+
+    private static final ModConfigSpec.IntValue JUMP_SHOCK_RECOVERY_TICKS = B
+            .comment("How long, in ticks, the landing load stays on the structure before it is",
+                    "handed back. 20 is one second: long enough that a building already at its",
+                    "limit has a real window in which to come down, short enough that walking",
+                    "about does not accumulate. Every point taken is given back exactly, so this",
+                    "is a window and not a cost - a structure that survives the second is in the",
+                    "state it started in. 0 restores on the very next tick.")
+            .defineInRange("jumpShockRecoveryTicks", 20, 0, 12000);
+
+    private static final ModConfigSpec.DoubleValue JUMP_SHOCK_MIN_FALL_DISTANCE = B
+            .comment("How far a player must have fallen, in blocks, for the landing to load the",
+                    "structure. A standing jump peaks at about 1.25, stepping down off a slab is",
+                    "about 0.5, and simply walking is 0. The default lets a step down count and",
+                    "ignores flat ground; raise it past 1.3 to make only real falls load a",
+                    "floor, or drop it to 0 to have every landing of any kind count.")
+            .defineInRange("jumpShockMinFallDistance", 0.5, 0.0, 256.0);
+
+    // ---- sable ------------------------------------------------------------
+
+    private static final ModConfigSpec.BooleanValue REPORT_SUB_LEVEL_LIGHT = B
+            .comment("Whether to report the light state of every freshly lit sable plot chunk to",
+                    "the log. This replaces fixSubLevelSkyLight, which forced sky light on and",
+                    "was proven in 0.7.4 to change nothing: sable's lightChunk calls",
+                    "propagateLightSources immediately after the setLightEnabled that key was",
+                    "overriding, and vanilla's BlockLightEngine.propagateLightSources and",
+                    "SkyLightEngine.propagateLightSources BOTH re-enable light unconditionally as",
+                    "their very first statement, so the flag was already being undone two lines",
+                    "later. Sub-levels are still dark, so the cause is somewhere else, and this",
+                    "prints what the plot's own light engine actually holds - per section:",
+                    "whether light is on, whether a sky layer exists, and whether that layer is",
+                    "all zero - so the next in-game run says where the darkness enters instead",
+                    "of another reading of the source guessing at it. Only has any effect with",
+                    "sable installed. Log noise: thinned after the first few chunks.")
+            .define("reportSubLevelLight", true);
+
     // ---- ground that stopped being ground ----------------------------------
 
     private static final ModConfigSpec.IntValue ENCLOSURE_CHECK_CHANCE = B
@@ -274,13 +328,43 @@ public final class SIConfig {
                     () -> "", SIConfig::isBlockId);
 
     private static final ModConfigSpec.BooleanValue MATERIAL_BOUNDARY_STOPS = B
-            .comment("true: material crossings shape the chain. Into a sturdier material the",
-                    "delta lands once on the first block and stops there, absorbed. Into a",
-                    "weaker material the first block takes the previous block's whole",
-                    "remaining deficit (entry value - wbireg) instead of the plain delta; zero",
-                    "deficit means nothing crosses and the walk stops. Equal calibre passes",
-                    "untouched. Charge and relax walk the same way.")
+            .comment("NO LONGER READ as of 0.7.8. Kept declared so upgrading does not drop the",
+                    "key from an existing config file; setting it has no effect either way.",
+                    "It used to gate two penalties at a material change, and both are gone.",
+                    "Crossing INTO a weaker material took the previous block's whole accumulated",
+                    "wear in a single step. Because that wear was a running total that charging",
+                    "never discharged, the same debt was re-billed on every pass, and anything",
+                    "attached to a worn structure was destroyed however sound its own material",
+                    "was - 28 of 36 failures in one 0.7.7 session, single steps as large as 45.",
+                    "A fall now takes the plain delta like any other step. The rule is one-sided",
+                    "on purpose: weak materials have low natural ratings, so a structure built",
+                    "out of them or standing on them already runs out and falls on the plain",
+                    "delta and needs no extra penalty at the boundary.",
+                    "Crossing INTO a sturdier material stopped the walk on the first block of it,",
+                    "absorbed. That contradicted the rule it was meant to serve - it withheld the",
+                    "brace below AND refused to let the load reach the ground the foundation was",
+                    "standing on - and it was unreachable anyway unless strongerMaterialBraces",
+                    "was off. A rise now braces and CONTINUES; see strongerMaterialBraces.")
             .define("materialBoundaryStops", true);
+
+    private static final ModConfigSpec.BooleanValue STRONGER_MATERIAL_BRACES = B
+            .comment("NO LONGER READ as of 0.7.8, because the brace stopped being one of two ways",
+                    "to score a material rise and became THE way. Kept declared so upgrading",
+                    "does not drop the key from an existing config file; setting it has no",
+                    "effect either way. What it describes is now unconditional:",
+                    "A stronger material braces the weaker one that leans on it. When the chain",
+                    "crosses from a weaker block into a sturdier one, one point of the loss moves",
+                    "off the weaker block onto the sturdier: the weaker block is given its point",
+                    "back (so it ends the pass unchanged) and the sturdier one takes an extra",
+                    "point (so -1 becomes -2). The walk then CONTINUES past the crossing, and",
+                    "every block below it takes the plain delta as usual - a rise concentrates a",
+                    "point onto the foundation, it does not terminate at it. Crossing the other",
+                    "way, into a weaker material, is untouched, and so is everything else.",
+                    "The pair is conserved, so the two blocks together lose exactly what they",
+                    "lost before and a place/break cycle still cancels; a relax mirrors it, the",
+                    "sturdier block gaining two and the weaker giving one back. If a clamp stops",
+                    "the sturdier block taking its extra point, nothing is transferred at all.")
+            .define("strongerMaterialBraces", true);
 
     private static final ModConfigSpec.IntValue MAX_LOAD_PATH = B
             .comment("How many blocks the placement charge may descend before giving up.")
@@ -310,13 +394,43 @@ public final class SIConfig {
             .define("sidewaysMultiplierOnRestore", true);
 
     private static final ModConfigSpec.DoubleValue SIDE_INHERITANCE_FACTOR = B
-            .comment("What fraction of its own natural integrity a block gets when it is",
-                    "placed against the SIDE of its support instead of on top of it. The",
-                    "cap is on the placed block's own material, not on the value it",
-                    "inherits, so a ledge is uniformly half-strength rather than halving",
-                    "again at every block out. Ground is exempt - founding on rock is free",
-                    "whichever face touches it. 1.0 disables the rule.")
+            .comment("What fraction of the SUPPORT's REMAINING integrity a block gets when",
+                    "it is placed against the SIDE of that support instead of on top of it.",
+                    "A side joint is only as good as the material it was made against, so a",
+                    "shelf bolted to deepslate is a better shelf than the same shelf bolted",
+                    "to planks. The result is still capped at the placed block's own",
+                    "natural - a good joint does not make a block sounder than its material.",
+                    "As of 0.7.9 the fraction is of what the support currently HOLDS, not of",
+                    "its natural rating: a wall one point from failing should not hand out",
+                    "half of a full stone rating. The two read the same on a fresh support",
+                    "and diverge as it wears - a stone wall worn 32 -> 10 gives 16 under the",
+                    "old rule and 5 under this one. It follows that a ledge now halves at",
+                    "every block out (16, 8, 4, 2) instead of being uniformly half-strength,",
+                    "so long cantilevers thin out and end on their own. Ground is exempt -",
+                    "founding on rock is free whichever face touches it. 1.0 disables the",
+                    "rule and hands over the support's whole remaining value.")
             .defineInRange("sideInheritanceFactor", 0.5, 0.0, 1.0);
+    // Unread since 0.7.10, which removed the side-joint fraction: a block placed
+    // against a vertical face now inherits what that face's block holds, the same
+    // as one set on top of it, and the sideways cost is charged where it always
+    // was - to the load chain, at sidewaysLoadMultiplier. Both this key and
+    // sideJointNeverArrivesSpent below stay DECLARED for the reason given at
+    // Integrity.chain(): dropping a declaration does not leave the key alone in an
+    // existing TOML, it removes it, and the value silently reverts on a downgrade.
+
+    private static final ModConfigSpec.BooleanValue SIDE_JOINT_NEVER_ARRIVES_SPENT = B
+            .comment("true: a block placed against a side face never arrives already spent -",
+                    "the inherited value is floored one point above failure, so a wall that",
+                    "is nearly gone still carries a cracked shelf. false: it arrives with",
+                    "whatever the fraction produced, and against a nearly-spent support that",
+                    "is nothing, so the placement fails immediately.",
+                    "Only reachable against a support that is itself nearly spent, where",
+                    "half of what little is left rounds away to zero - on any healthy",
+                    "structure the two settings are identical. A support that is ALREADY",
+                    "spent grants nothing either way; there is no fraction of nothing, and",
+                    "flooring a dead wall into granting a live attachment is the one outcome",
+                    "neither setting wants. true matches 0.7.8 and earlier.")
+            .define("sideJointNeverArrivesSpent", true);
 
     // ---- base integrity values --------------------------------------------
 
@@ -386,6 +500,42 @@ public final class SIConfig {
             .comment("How long after coming to rest a sub-level stays eligible to revert.")
             .defineInRange("restCheckTicks", 20, 1, 1200);
 
+    private static final ModConfigSpec.IntValue SNAP_ASSIST_TICKS = B
+            .comment("How long a sub-level must sit completely still, in ticks, before it gets a",
+                    "second and more forgiving chance to turn back into blocks. 0 turns the",
+                    "second chance off entirely.",
+                    "Why there is a second chance at all: the first check runs in the",
+                    "restCheckTicks window right after the body stops, and it demands the body",
+                    "have come to rest already square with the world - within",
+                    "snapOrientationEpsilon of a quarter turn and snapPositionEpsilon of a block",
+                    "centre. Nothing whatsoever nudges a resting body toward those conditions,",
+                    "so whether a piece of rubble becomes blocks again is decided by where the",
+                    "physics happened to drop it. In practice most pieces miss, and a world",
+                    "slowly fills with debris that is permanently a physics body.",
+                    "This is not a nudge either - the revert has always placed blocks at the",
+                    "NEAREST block centre and the NEAREST quarter turn, so the epsilons were",
+                    "only ever asking 'is rounding honest here'. After three seconds of a body",
+                    "not moving at all, rounding a little further is honest.")
+            .defineInRange("snapAssistTicks", 60, 0, 12000);
+
+    private static final ModConfigSpec.DoubleValue SNAP_ASSIST_POSITION_EPSILON = B
+            .comment("How far off a block centre a long-rested sub-level may be and still be",
+                    "rounded onto the grid, in blocks. Applies only after snapAssistTicks.",
+                    "0.5 would accept anything at all, since nothing can be further than half a",
+                    "block from the nearest centre; the default leaves a margin so a piece",
+                    "wedged exactly between two positions is still left where it is.")
+            .defineInRange("snapAssistPositionEpsilon", 0.30, 0.001, 0.5);
+
+    private static final ModConfigSpec.DoubleValue SNAP_ASSIST_ORIENTATION_EPSILON = B
+            .comment("How far off a quarter turn a long-rested sub-level may be and still be",
+                    "rounded onto the grid. Applies only after snapAssistTicks. Measured as the",
+                    "distance between unit vectors, so 0.45 is about 26 degrees of yaw.",
+                    "The up-vector test is NOT loosened by this: a body lying on its side or",
+                    "tipped onto a corner still never reverts, however long it rests, because a",
+                    "vanilla block state cannot express that and rounding it away would stand a",
+                    "toppled wall back up.")
+            .defineInRange("snapAssistOrientationEpsilon", 0.45, 0.001, 1.0);
+
     private static final ModConfigSpec.BooleanValue SUBLEVELS_FLOAT_WHEN_RECONVERTED = B
             .comment("Whether a landing is allowed to mint new ground.",
                     "false, the default since 0.7.0: it never is. Every block a landed",
@@ -402,6 +552,51 @@ public final class SIConfig {
                     "gametest suite watched it happen: 4/4 landed blocks touch the standing",
                     "world, so every block of that reverted piece became ground.")
             .define("subLevelsFloatWhenReconverted", false);
+
+
+    // ---- repairing by hand -------------------------------------------------
+
+    private static final ModConfigSpec.BooleanValue WRENCH_REPAIR_ENABLED = B
+            .comment("Whether a block's integrity can be recalculated by right-clicking it with a",
+                    "tool. This exists because damage outlives its cause. When a piece of a",
+                    "building shears off and becomes a sub-level, its rows are cleared and it",
+                    "flies away, but every point it charged into the wall it was hanging from",
+                    "stays charged - the wall is holding a load that is no longer there. Nothing",
+                    "in the mod ever gives that back, so a building that has survived one",
+                    "collapse is permanently weaker than the same building freshly built. This",
+                    "makes the repair a deliberate act with a tool in hand rather than something",
+                    "the world quietly does for the player.")
+            .define("wrenchRepairEnabled", true);
+
+    private static final ModConfigSpec.ConfigValue<String> WRENCH_REPAIR_ITEM = B
+            .comment("The registry id of the item that repairs. create:wrench by default,",
+                    "because Create's wrench does nothing at all when right-clicked on an",
+                    "ordinary block - it only acts on its own IWrenchable machines - so the",
+                    "interaction is free and the tool already means 'adjust the building' to",
+                    "anyone playing Create. The mod does not depend on Create: the item is",
+                    "matched by id, so with Create absent this simply never fires, and any other",
+                    "item can be named here instead.")
+            .define("wrenchRepairItem", "create:wrench");
+
+    private static final ModConfigSpec.BooleanValue WRENCH_REPAIR_REQUIRES_SNEAK = B
+            .comment("Whether the repair needs sneak-right-click rather than plain right-click.",
+                    "Off by default. Create's wrench uses plain right-click to rotate its own",
+                    "machines and sneak-right-click both to pick them up and to pick up anything",
+                    "in the create:wrench_pickup tag, so BOTH clicks are already taken on the",
+                    "blocks Create cares about - the repair skips those blocks either way and",
+                    "never overrides Create. This is here for a pack that binds the repair to a",
+                    "tool with its own plain-click behaviour.")
+            .define("wrenchRepairRequiresSneak", false);
+
+    private static final ModConfigSpec.IntValue WRENCH_REPAIR_RADIUS = B
+            .comment("How far around the clicked block a single repair reaches, in blocks.",
+                    "0, the default: exactly the block clicked. Higher values repair a cube of",
+                    "that radius, lowest blocks first, which matters - a block can only be",
+                    "repaired as far as its best neighbour currently stands, so a wall mends",
+                    "from the bottom up and one click on a tall one at radius 4 does what four",
+                    "careful clicks up the same wall would. Raising this makes repair cheap:",
+                    "the cost of mending a building is meant to be the walking.")
+            .defineInRange("wrenchRepairRadius", 0, 0, 8);
 
     public static final ModConfigSpec SPEC = B.build();
 
@@ -468,11 +663,15 @@ public final class SIConfig {
     }
 
     public static int explosionShockwaveDelta() {
-        return SPEC.isLoaded() ? EXPLOSION_SHOCKWAVE_DELTA.get() : 0;
+        return SPEC.isLoaded() ? EXPLOSION_SHOCKWAVE_DELTA.get() : 8;
     }
 
     public static boolean materialBoundaryStops() {
         return !SPEC.isLoaded() || MATERIAL_BOUNDARY_STOPS.get();
+    }
+
+    public static boolean strongerMaterialBraces() {
+        return !SPEC.isLoaded() || STRONGER_MATERIAL_BRACES.get();
     }
 
     public static int maxLoadPath() {
@@ -489,6 +688,10 @@ public final class SIConfig {
 
     public static double sideInheritanceFactor() {
         return SPEC.isLoaded() ? SIDE_INHERITANCE_FACTOR.get() : 0.5;
+    }
+
+    public static boolean sideJointNeverArrivesSpent() {
+        return !SPEC.isLoaded() || SIDE_JOINT_NEVER_ARRIVES_SPENT.get();
     }
 
     public static boolean breakShockwave() {
@@ -586,7 +789,7 @@ public final class SIConfig {
     }
 
     public static double collapseTorque() {
-        return SPEC.isLoaded() ? COLLAPSE_TORQUE.get() : 2.5;
+        return SPEC.isLoaded() ? COLLAPSE_TORQUE.get() : 0.05;
     }
 
     public static boolean playerImpactEnabled() {
@@ -601,6 +804,26 @@ public final class SIConfig {
         return SPEC.isLoaded() ? PLAYER_IMPACT_MIN_SPEED.get() : 0.15;
     }
 
+    public static boolean jumpShockEnabled() {
+        return !SPEC.isLoaded() || JUMP_SHOCK_ENABLED.get();
+    }
+
+    public static int jumpShockLoad() {
+        return SPEC.isLoaded() ? JUMP_SHOCK_LOAD.get() : 1;
+    }
+
+    public static int jumpShockRecoveryTicks() {
+        return SPEC.isLoaded() ? JUMP_SHOCK_RECOVERY_TICKS.get() : 20;
+    }
+
+    public static double jumpShockMinFallDistance() {
+        return SPEC.isLoaded() ? JUMP_SHOCK_MIN_FALL_DISTANCE.get() : 0.5;
+    }
+
+    public static boolean reportSubLevelLight() {
+        return !SPEC.isLoaded() || REPORT_SUB_LEVEL_LIGHT.get();
+    }
+
     public static int enclosureCheckChance() {
         return SPEC.isLoaded() ? ENCLOSURE_CHECK_CHANCE.get() : 100;
     }
@@ -612,5 +835,33 @@ public final class SIConfig {
     public static Set<Block> enclosureGroundBlocks() {
         return SPEC.isLoaded() ? resolve(ENCLOSURE_GROUND_BLOCKS.get())
                 : Set.of(net.minecraft.world.level.block.Blocks.DEEPSLATE);
+    }
+
+    public static int snapAssistTicks() {
+        return SPEC.isLoaded() ? SNAP_ASSIST_TICKS.get() : 60;
+    }
+
+    public static double snapAssistPositionEpsilon() {
+        return SPEC.isLoaded() ? SNAP_ASSIST_POSITION_EPSILON.get() : 0.30;
+    }
+
+    public static double snapAssistOrientationEpsilon() {
+        return SPEC.isLoaded() ? SNAP_ASSIST_ORIENTATION_EPSILON.get() : 0.45;
+    }
+
+    public static boolean wrenchRepairEnabled() {
+        return !SPEC.isLoaded() || WRENCH_REPAIR_ENABLED.get();
+    }
+
+    public static String wrenchRepairItem() {
+        return SPEC.isLoaded() ? WRENCH_REPAIR_ITEM.get() : "create:wrench";
+    }
+
+    public static boolean wrenchRepairRequiresSneak() {
+        return SPEC.isLoaded() && WRENCH_REPAIR_REQUIRES_SNEAK.get();
+    }
+
+    public static int wrenchRepairRadius() {
+        return SPEC.isLoaded() ? WRENCH_REPAIR_RADIUS.get() : 0;
     }
 }
